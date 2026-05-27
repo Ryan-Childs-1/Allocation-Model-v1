@@ -1,0 +1,23 @@
+{
+  "model_type": "continued_base_sklearn_mlp_neural_network",
+  "backend": "sklearn_mlp_base_model_continued_training_hosted_compatible",
+  "rows_trained": 35502,
+  "positive_rows": 5502,
+  "positive_rate": 0.15497718438397837,
+  "continued_epochs": 4,
+  "full_data_polish_epochs": 0,
+  "recommended_threshold": 0.35,
+  "max_units_class": 120,
+  "validation_method": "holdout_by_file",
+  "validation_rows": 8004,
+  "train_rows": 27498,
+  "validation_precision": 0.9146666666666666,
+  "validation_recall": 0.8557884231536926,
+  "validation_f1": 0.8842485176591905,
+  "validation_false_positive_rate": 0.02666666666666667,
+  "validation_integer_unit_accuracy": 0.9029235382308846,
+  "validation_positive_integer_unit_accuracy": 0.6746506986027944,
+  "validation_integer_unit_mae": 0.15592203898050974,
+  "trained_seconds": 25.26,
+  "note": "Base hosted-compatible neural MLP continued for 4 additional epochs on the cached multi-file allocation dataset. Keras/Torch training code remains included for deeper hosted/local sessions."
+}
