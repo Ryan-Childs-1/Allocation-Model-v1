@@ -390,12 +390,17 @@ def predict_to_outputs(df: pd.DataFrame, bundle: dict, cfg: AllocationConfig) ->
 
     final_numeric = pd.to_numeric(audit["final_alloc"], errors="coerce").fillna(0)
     prob_s = pd.to_numeric(audit["probability"], errors="coerce").fillna(0)
+    review_mask = audit["flag"].astype(str).str.upper().str.contains("REVIEW", na=False) if "flag" in audit.columns else pd.Series(False, index=audit.index)
     summary = {
         "rows": int(len(out)),
         "allocated_rows": int((final_numeric > 0).sum()),
         "total_final_alloc": int(final_numeric.sum()),
         "mean_probability": float(prob_s.mean() if len(prob_s) else 0),
         "z_no_alloc_overrides": int(pd.to_numeric(audit.get("z_no_alloc_override", pd.Series(0, index=audit.index)), errors="coerce").fillna(0).sum()),
-        "review_rows_allocated": int(((audit["flag"].astype(str).str.upper().str.contains("REVIEW", na=False)) & (final_numeric > 0)).sum()),
+        "review_rows_allocated": int((review_mask & (final_numeric > 0)).sum()),
+        "review_total_final_alloc": int(final_numeric.where(review_mask, 0).sum()),
+        "review_pass_1_added": int(pd.to_numeric(audit.get("review_pass_1_added", pd.Series(0, index=audit.index)), errors="coerce").fillna(0).sum()),
+        "review_pass_2_added": int(pd.to_numeric(audit.get("review_pass_2_added", pd.Series(0, index=audit.index)), errors="coerce").fillna(0).sum()),
+        "review_pass_3_added": int(pd.to_numeric(audit.get("review_pass_3_added", pd.Series(0, index=audit.index)), errors="coerce").fillna(0).sum()),
     }
     return out, audit, summary

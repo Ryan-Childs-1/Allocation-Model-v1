@@ -1,23 +1,52 @@
-# Allocation AI Predictor — Fixed New Model Version
+# Allocation AI Predictor — Three-Pass Review Version
 
 This is the simplified prediction-only Streamlit app. It accepts allocation files and returns a completed CSV plus audit outputs.
 
-## What this fixed
+## Key behavior
 
-This version fixes crashes that happened when uploading the newer Jupyter-trained artifact zip.
+- Upload `.xlsb`, `.xlsx`, or `.csv` allocation files.
+- Optionally upload a newer trained artifact `.zip`, `.joblib`, or `.pkl` model bundle.
+- Predict integer-only `Final Alloc.` values.
+- Preserve the original row order in the completed CSV.
+- Return blank Final Alloc cells when no allocation is recommended.
+- Simulate item-level `Left DC` as allocations are made.
+- Allow `Z - No Alloc.` rows to receive allocation only when model/demand signals justify it.
+- Process `Review` rows in up to **three separate passes**.
+- Do **not** cap Review additions by a maximum number of FLMs per pass.
 
-The issue was caused by two things:
+## Three-pass Review logic
 
-1. **scikit-learn pickle version mismatch** between the Jupyter training environment and Streamlit hosting.
-2. **memory pressure during prediction** because the newer model uses a larger sklearn preprocessing matrix than the older base model.
+Review rows are intentionally revisited after the normal allocation pass:
 
-The app now:
+1. **Review pass 1 — zero/blank scan**
+   - Looks for Review rows still at zero/blank.
+   - Can seed allocation when demand, Alloc. Rec., or model confidence supports it.
 
-- Repairs known sklearn compatibility issues after loading uploaded model artifacts.
-- Processes prediction in chunks to avoid dense-array memory crashes.
-- Accepts `.zip`, `.joblib`, and `.pkl` model uploads.
-- Uses the newer Model v2 app-compatible model as the included base model.
-- Keeps outputs as CSV so row order is preserved and downloads are reliable.
+2. **Review pass 2 — add justified remaining amount**
+   - Can add the full remaining model/demand-supported amount when the row still has need and remaining Left DC.
+   - There is no artificial max-FLM-per-pass cap.
+
+3. **Review pass 3 — final top-up**
+   - Highest-confidence final pass.
+   - Can add the full remaining justified amount when the model and/or Alloc. Rec. strongly support it.
+   - There is no artificial max-FLM-per-pass cap.
+
+Each pass sees the updated remaining item-level Left DC from previous allocations. Final outputs are still constrained by Left DC, demand protection, Alloc. Rec. influence mode, probability thresholds, and integer FLM rounding.
+
+## Audit output
+
+The audit CSV includes review-specific fields:
+
+```text
+review_passes_attempted
+review_pass_1_added
+review_pass_2_added
+review_pass_3_added
+review_total_added
+allocated_on_pass
+```
+
+These fields show exactly which pass added inventory to a Review row.
 
 ## Files
 

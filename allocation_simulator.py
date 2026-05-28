@@ -31,7 +31,6 @@ class AllocationConfig:
     review_pass1_min_probability: float = 0.55
     review_pass2_min_probability: float = 0.70
     review_pass3_min_probability: float = 0.85
-    review_pass_max_add_flm_units: float = 1.0
 
 
 def _num_series(df: pd.DataFrame, field: str, default: float = 0.0) -> pd.Series:
@@ -86,8 +85,8 @@ def apply_allocation_simulation(
       * Pass 1 is a conservative zero/blank scan: it is designed to catch Review
         rows that the model predicted as zero but the workbook demand / Alloc. Rec.
         signal says should receive at least one FLM.
-      * Pass 2 can add one additional FLM unit when model/demand signals are solid.
-      * Pass 3 can add a final incremental allocation when confidence is highest.
+      * Pass 2 can add the remaining model/demand-supported amount.
+      * Pass 3 can add any final top-up still supported by demand, Alloc. Rec., model confidence, and Left DC.
     - Each Review pass sees the reduced item-level Left DC from previous passes.
     - Final values remain integer FLM multiples or blank.
     """
@@ -150,8 +149,6 @@ def apply_allocation_simulation(
         2: float(getattr(cfg, "review_pass2_min_probability", 0.70)),
         3: float(getattr(cfg, "review_pass3_min_probability", 0.85)),
     }
-    max_review_add_units = max(float(getattr(cfg, "review_pass_max_add_flm_units", 1.0) or 1.0), 0.0)
-
     def _base_row_values(pos: int, idx):
         f = max(int(flm.loc[idx]), 1)
         prob = float(probabilities[pos])
@@ -362,22 +359,23 @@ def apply_allocation_simulation(
                 else:
                     reasons.append("review_pass_1_already_allocated")
             elif pass_num == 2:
-                # Second pass can add one FLM when probability or workbook recommendation is strong.
+                # Second pass can add the remaining model/demand-supported amount.
+                # There is intentionally NO artificial max-FLM-per-pass cap here.
                 enough_signal = vals["prob"] >= threshold or need_seed_units >= 1
-                target_total = max(raw_alloc, min(int(np.floor(vals["need_units"])) * f, raw_alloc + f))
+                target_total = max(raw_alloc, int(np.floor(vals["need_units"])) * f)
                 if enough_signal and target_total > current_alloc:
-                    desired_increment = min(target_total - current_alloc, max_review_add_units * f)
-                    reasons.append("review_pass_2_incremental_add_supported")
+                    desired_increment = target_total - current_alloc
+                    reasons.append("review_pass_2_incremental_add_supported_no_flm_cap")
                 else:
                     reasons.append("review_pass_2_no_action")
             elif pass_num == 3:
-                # Third pass is the highest-confidence final top-up. It only adds more when the
-                # neural probability is high or Alloc. Rec. / need still clearly exceeds current allocation.
+                # Third pass is the highest-confidence final top-up. It can add the full remaining
+                # justified amount; there is intentionally NO artificial max-FLM-per-pass cap.
                 enough_signal = vals["prob"] >= threshold or (vals["alloc_rec_units"] >= (current_alloc / f + 1) and vals["need_units"] >= (current_alloc / f + 1))
                 target_total = max(raw_alloc, int(np.floor(min(vals["alloc_rec_units"], vals["need_units"]))) * f)
                 if enough_signal and target_total > current_alloc:
-                    desired_increment = min(target_total - current_alloc, max_review_add_units * f)
-                    reasons.append("review_pass_3_final_top_up_supported")
+                    desired_increment = target_total - current_alloc
+                    reasons.append("review_pass_3_final_top_up_supported_no_flm_cap")
                 else:
                     reasons.append("review_pass_3_no_action")
 

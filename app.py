@@ -39,6 +39,14 @@ with st.sidebar:
     min_probability = st.slider("Minimum allocation probability", 0.01, 0.95, min(max(default_threshold, 0.01), 0.95), 0.01)
     demand_extra = st.slider("Demand cap extra FLM", 0.0, 6.0, 1.0, 0.25)
     allow_review = st.checkbox("Allow Review rows", value=True)
+    review_passes = st.slider(
+        "Review-row passes", 1, 3, 3, 1,
+        help="Review rows are revisited up to three times. Pass 1 scans zero/blank Review rows; passes 2 and 3 can add incremental allocations if justified.",
+    )
+    review_pass1_prob = st.slider("Review pass 1 zero-scan probability", 0.10, 0.95, 0.55, 0.01)
+    review_pass2_prob = st.slider("Review pass 2 add-more probability", 0.10, 0.95, 0.70, 0.01)
+    review_pass3_prob = st.slider("Review pass 3 final top-up probability", 0.10, 0.95, 0.85, 0.01)
+    st.caption("Review passes are not capped by a max FLM-per-pass setting. Each pass may add the full justified amount, limited only by Left DC, demand protection, Alloc. Rec. influence, and integer FLM rounding.")
     allow_no_alloc = st.checkbox("Allow Z - No Alloc. rows if justified", value=True)
     no_alloc_prob = st.slider("Z - No Alloc override probability", 0.10, 0.95, 0.65, 0.01)
     no_alloc_need = st.slider("Z - No Alloc minimum need / Alloc. Rec. units", 0.0, 10.0, 1.0, 0.5)
@@ -84,6 +92,10 @@ if file is not None:
                 allow_no_alloc_rows=bool(allow_no_alloc),
                 no_alloc_min_probability=float(no_alloc_prob),
                 no_alloc_min_need_flm_units=float(no_alloc_need),
+                review_passes=int(review_passes),
+                review_pass1_min_probability=float(review_pass1_prob),
+                review_pass2_min_probability=float(review_pass2_prob),
+                review_pass3_min_probability=float(review_pass3_prob),
             )
             with st.spinner("Loading model/artifacts and running sequential allocation simulation..."):
                 bundle = load_model_bundle(uploaded_model)
@@ -118,6 +130,13 @@ if "out_df" in st.session_state:
     c3.metric("Total Final Alloc", f"{summary['total_final_alloc']:,}")
     c4.metric("Mean probability", f"{summary['mean_probability']:.3f}")
     c5.metric("Z - No Alloc overrides", f"{summary['z_no_alloc_overrides']:,}")
+
+    r1, r2, r3, r4, r5 = st.columns(5)
+    r1.metric("Review rows allocated", f"{summary.get('review_rows_allocated', 0):,}")
+    r2.metric("Review total alloc", f"{summary.get('review_total_final_alloc', 0):,}")
+    r3.metric("Review pass 1 added", f"{summary.get('review_pass_1_added', 0):,}")
+    r4.metric("Review pass 2 added", f"{summary.get('review_pass_2_added', 0):,}")
+    r5.metric("Review pass 3 added", f"{summary.get('review_pass_3_added', 0):,}")
     if summary.get("model_source"):
         st.info(f"Model source used: `{summary['model_source']}`")
     if summary.get("compatibility_repairs"):
@@ -150,4 +169,4 @@ if "out_df" in st.session_state:
     d3.download_button("Download output ZIP", zip_buf.getvalue(), "allocation_ai_prediction_output.zip", mime="application/zip")
 
 st.divider()
-st.caption("This version intentionally removes training and dataset-building. To update predictions, upload a newer .joblib/.pkl model bundle or a full training artifact .zip in the sidebar.")
+st.caption("Prediction-only app. Review passes have no artificial max-FLM add cap; outputs are still limited by Left DC, demand protection, Alloc. Rec. influence, and integer FLM rounding. To update predictions, upload a newer .joblib/.pkl model bundle or a full training artifact .zip in the sidebar.")
