@@ -1,100 +1,61 @@
-# Allocation AI Advanced Neural Training Studio
+# Allocation AI Predictor — Prediction-Only Streamlit App
 
-Hosted Streamlit app for allocation training and prediction.
+This is the stripped-down Allocation AI app. It removes all training, dataset-builder, and model-lab pages. It is designed for hosted Streamlit prediction only.
 
-## What this version is designed to do
+## What it does
 
-- Run through Streamlit on the web.
-- Accept multiple `.xlsb`, `.xlsx`, or `.csv` historical allocation files in one training session.
-- Train a single advanced Keras neural network using the PyTorch backend.
-- Include a compressed base neural model so prediction works immediately after deployment.
-- Predict integer FLM-unit classes, then convert them into integer `Final Alloc.` values.
-- Preserve row order and download the completed result as CSV.
-- Return blanks for no-allocation rows.
-- Use `Left DC`, `Proj. Demand`, `Alloc. Rec.`, `Demand Check`, and `Helper` in feature engineering and allocation simulation.
+1. Upload a `.xlsb`, `.xlsx`, or `.csv` allocation file.
+2. Optionally upload an updated Allocation AI model bundle (`.joblib` or `.pkl`).
+3. Predict integer-only `Final Alloc.` values.
+4. Preserve the original row order.
+5. Return:
+   - `completed_allocation.csv`
+   - `allocation_audit.csv`
+   - `prediction_summary.json` inside a zip
 
-## Included base model
+## Included model
 
-This package includes:
+The app includes:
 
-- `allocation_ai_base_sklearn_mlp.joblib`
-- `allocation_ai_metadata.json`
-- `allocation_training_dataset_base.pkl`
+```text
+allocation_ai_base_sklearn_mlp.joblib
+allocation_ai_metadata.json
+```
 
-The base neural model is a compressed sklearn MLP neural network trained from the provided allocation files that could be processed in this environment. It is intended as a starter model so the hosted app can make predictions immediately. The **Advanced Training Session** tab should be used to train a stronger `.keras` model for many epochs or hours.
+The base model is a compressed sklearn neural-network prediction bundle. It is used automatically unless an updated model bundle is uploaded in the sidebar.
 
-## Streamlit Cloud / hosted setup
+## Updated model bundle format
 
-Upload all files in this flat folder to a GitHub repository. Then deploy the repo in Streamlit.
+An uploaded model bundle must be a joblib/pickle dictionary with these keys:
 
-Use `app.py` as the entry point.
+```python
+{
+    "preprocessor": ...,      # fitted feature preprocessor
+    "feature_columns": ...,   # list of model feature columns
+    "unit_model": ...,        # predicts integer FLM-unit class
+    "alloc_model": ...,       # predicts allocation probability
+}
+```
 
-`runtime.txt` pins Python 3.11 to improve Torch/Keras wheel compatibility.
+## Running on Streamlit
 
-## Recommended workflow
-
-1. Deploy to Streamlit.
-2. Open the app.
-3. Use **Predict Allocation** to test the included base model.
-4. Use **Dataset Builder** to upload many completed allocation files and build a cached dataset.
-5. Use **Advanced Training Session** to train the Keras/Torch neural network.
-6. Use **Evaluate Model** on a held-out completed file.
-7. Use **Predict Allocation** to download a completed CSV with integer Final Alloc values.
-
-## Main files
+The app entry point is:
 
 ```text
 app.py
-allocation_simulator.py
-data_io.py
-dataset_store.py
-features.py
-metrics.py
-neural_model.py
-predictor.py
-schema.py
-training.py
-requirements.txt
-runtime.txt
-allocation_ai_base_sklearn_mlp.joblib
-allocation_ai_metadata.json
-allocation_training_dataset_base.pkl
 ```
 
-No `run_app.bat` is included because this version is designed for hosted Streamlit deployment.
+Install dependencies:
 
-## Included continued-training model
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
 
-This package includes an updated hosted-compatible base neural MLP artifact:
+## Notes
 
-- `allocation_ai_base_sklearn_mlp.joblib`
-- `allocation_ai_metadata.json`
-- `continued_training_progress.csv`
-- `continued_training_result.json`
-
-The base model was continued on the cached multi-file allocation dataset and the app will use it automatically until a `.keras` model is trained in the Advanced Training Session tab.
-
-## Z - No Alloc. override behavior
-
-This version no longer treats `Z - No Alloc.` rows as permanently blocked.
-
-During prediction, the simulator can allocate these rows when either:
-
-- the model predicts a high enough allocation probability and a positive FLM-unit class, or
-- the row has enough demand/need and `Alloc. Rec.` support to justify a conservative override.
-
-The sidebar exposes these controls:
-
-- **Allow Z - No Alloc. rows when model/demand justify it**
-- **Z - No Alloc override probability**
-- **Z - No Alloc minimum need / Alloc. Rec. units**
-
-The audit CSV includes:
-
-- `is_z_no_alloc`
-- `z_no_alloc_override`
-- `need_units`
-- `alloc_rec_units`
-- `reason`
-
-Final outputs remain integer FLM multiples or blank.
+- Output is CSV, not `.xlsb`.
+- `Final Alloc.` predictions are integers or blanks. No floats are written.
+- `Left DC` is simulated sequentially by item.
+- `Z - No Alloc.` rows can be allocated when the model and demand signals justify it, depending on sidebar settings.
+- The app does not train or retrain models. Use a separate training environment to produce updated `.joblib` bundles, then upload them here.
