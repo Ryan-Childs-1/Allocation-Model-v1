@@ -1,44 +1,79 @@
-# Allocation AI Predictor — Artifact ZIP Compatible
+# Allocation AI Predictor — Model v2 Bundled
 
-Prediction-only Streamlit app for Allocation AI.
+This is the simplified prediction-only Streamlit app with your updated **Model v2** included as the default AI.
 
-## What this version fixes
+## What this app does
 
-This version repairs scikit-learn pickle compatibility problems when uploading a Jupyter-trained artifact ZIP. In particular, it fixes errors like:
+- Upload a `.xlsb`, `.xlsx`, or `.csv` allocation file.
+- Predict integer-only `Final Alloc.` values.
+- Preserve the original row order in the output CSV.
+- Simulate `Left DC` sequentially by item.
+- Allow `Z - No Alloc.` rows to receive allocation when the model and demand signals justify it.
+- Download:
+  - `completed_allocation.csv`
+  - `allocation_audit.csv`
+  - `prediction_summary.json`
+  - combined output zip
+
+## Included AI
+
+The bundled default model is your Jupyter-trained **Model v2** app-compatible model, stored as:
 
 ```text
-AttributeError: 'SimpleImputer' object has no attribute '_fill_dtype'
+allocation_ai_base_sklearn_mlp.joblib
 ```
 
-That error happens when the Jupyter trainer serialized the app-compatible model under one scikit-learn version and Streamlit loads it under a newer version. The app now patches missing compatibility attributes after loading the uploaded model bundle.
+The app metadata is stored in:
 
-## Run on Streamlit
+```text
+allocation_ai_metadata.json
+```
 
-Upload these flat files to GitHub and deploy `app.py`.
+The included metadata reports approximately:
 
-## Model upload
+- Rows total: 106,950
+- Training rows: 73,803
+- Validation rows: 33,147
+- Positive rows: 5,502
+- Best threshold: 0.95
+- Validation F1: about 0.901
+- Validation precision: about 0.894
+- Validation recall: about 0.909
+- Unit accuracy: about 0.986
 
-The sidebar accepts:
+## Uploading newer models
 
-- `.zip` full artifact export from the Jupyter trainer
-- `.joblib` direct app-compatible prediction bundle
-- `.pkl` direct app-compatible prediction bundle
+The sidebar still accepts:
 
-If a full artifact ZIP is uploaded, the app finds the app-compatible model inside it, such as:
+```text
+.zip
+.joblib
+.pkl
+```
+
+If you upload a Jupyter training artifact zip, the app automatically searches inside it for:
 
 ```text
 allocation_ai_app_compatible_model.joblib
 ```
 
-It intentionally ignores raw PyTorch checkpoints such as `.pt` because the hosted prediction app uses the compressed app-compatible bundle.
+and uses that model for the session.
 
-## Output
+## Streamlit deployment
 
-The app returns:
+The app entry point is:
 
-- `completed_allocation.csv`
-- `allocation_audit.csv`
-- `prediction_summary.json`
-- one combined output ZIP
+```text
+app.py
+```
 
-Final Alloc values are integer-only or blank.
+Recommended install:
+
+```bash
+pip install -r requirements.txt
+streamlit run app.py
+```
+
+## Notes
+
+This version intentionally does not include training inside Streamlit. Training should be done in the Jupyter Lab trainer, then exported as a training artifact zip or app-compatible joblib bundle.

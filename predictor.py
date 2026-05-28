@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any, Tuple
 
 import joblib
+import warnings
 import numpy as np
 import pandas as pd
 
@@ -155,6 +156,17 @@ def _load_json_safely(path: Path) -> dict:
         return {}
 
 
+def _joblib_load_compat(path: Path):
+    """Load joblib models while keeping sklearn version warnings from cluttering Streamlit."""
+    try:
+        from sklearn.exceptions import InconsistentVersionWarning
+    except Exception:
+        InconsistentVersionWarning = Warning
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", InconsistentVersionWarning)
+        return joblib.load(path)
+
+
 def _pick_model_from_artifact_dir(root: Path) -> Path:
     """Find the app-compatible prediction bundle inside an exported training artifact folder.
 
@@ -247,16 +259,16 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
                 model_path = _pick_model_from_artifact_dir(extract_dir)
                 artifact_metadata = _find_metadata_in_artifact_dir(extract_dir)
                 artifact_model_name = model_path.name
-                bundle = joblib.load(model_path)
+                bundle = _joblib_load_compat(model_path)
                 bundle = _repair_sklearn_pickle_compat(bundle)
             elif suffix in {".joblib", ".pkl"}:
                 artifact_model_name = upload_name
-                bundle = joblib.load(upload_path)
+                bundle = _joblib_load_compat(upload_path)
                 bundle = _repair_sklearn_pickle_compat(bundle)
             else:
                 raise ValueError("Unsupported model upload. Please upload .zip, .joblib, or .pkl.")
     else:
-        bundle = joblib.load(Path(default_path))
+        bundle = _joblib_load_compat(Path(default_path))
         bundle = _repair_sklearn_pickle_compat(bundle)
         artifact_metadata = read_metadata()
 
