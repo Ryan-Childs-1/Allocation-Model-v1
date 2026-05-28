@@ -20,6 +20,124 @@ DEFAULT_MODEL_PATH = Path("allocation_ai_base_sklearn_mlp.joblib")
 DEFAULT_METADATA_PATH = Path("allocation_ai_metadata.json")
 
 
+# -----------------------------------------------------------------------------
+# scikit-learn pickle compatibility helpers
+# -----------------------------------------------------------------------------
+def _walk_estimator_tree(obj: Any, seen: set[int] | None = None):
+    """Yield sklearn-like objects contained inside pipelines/column transformers.
+
+    Model bundles are uploaded from Jupyter and then loaded by Streamlit. If the
+    two environments use different scikit-learn versions, older pickled objects
+    can be missing private attributes expected by newer sklearn releases. This
+    walker lets us patch those objects safely after joblib.load().
+    """
+    if seen is None:
+        seen = set()
+    oid = id(obj)
+    if oid in seen:
+        return
+    seen.add(oid)
+    yield obj
+
+    # Pipeline-like: .steps = [(name, estimator), ...]
+    steps = getattr(obj, "steps", None)
+    if steps:
+        for _name, step in steps:
+            yield from _walk_estimator_tree(step, seen)
+
+    # ColumnTransformer-like fitted transformers.
+    transformers = getattr(obj, "transformers_", None) or getattr(obj, "transformers", None)
+    if transformers:
+        for item in transformers:
+            if not item or len(item) < 2:
+                continue
+            trans = item[1]
+            if trans in (None, "drop", "passthrough"):
+                continue
+            yield from _walk_estimator_tree(trans, seen)
+
+    # FeatureUnion-like transformer_list.
+    transformer_list = getattr(obj, "transformer_list", None)
+    if transformer_list:
+        for _name, trans in transformer_list:
+            yield from _walk_estimator_tree(trans, seen)
+
+
+def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
+    """Repair known sklearn version-mismatch issues in uploaded model bundles.
+
+    The Jupyter trainer may create app-compatible bundles under sklearn 1.3.x,
+    while Streamlit hosting may load them under a newer sklearn. Newer sklearn
+    SimpleImputer expects a private attribute named `_fill_dtype` that older
+    pickles may not contain. Without this patch, prediction fails with:
+
+        AttributeError: 'SimpleImputer' object has no attribute '_fill_dtype'
+
+    This function only fills missing compatibility attributes; it does not
+    retrain or change model predictions.
+    """
+    if not isinstance(bundle, dict):
+        return bundle
+
+    try:
+        from sklearn.impute import SimpleImputer
+    except Exception:
+        SimpleImputer = None
+
+    repairs: list[str] = []
+    root_objects = [
+        bundle.get("preprocessor"),
+        bundle.get("unit_model"),
+        bundle.get("alloc_model"),
+    ]
+
+    for root in root_objects:
+        if root is None:
+            continue
+        for est in _walk_estimator_tree(root):
+            # sklearn >= 1.4/1.5 compatibility for older ColumnTransformer pickles.
+            # This is needed for safe repr/get_params in some hosted environments.
+            if est.__class__.__name__ == "ColumnTransformer" and not hasattr(est, "force_int_remainder_cols"):
+                try:
+                    est.force_int_remainder_cols = "deprecated"
+                    repairs.append("ColumnTransformer.force_int_remainder_cols")
+                except Exception:
+                    pass
+
+            # sklearn >= 1.6/1.7 compatibility for older SimpleImputer pickles.
+            if SimpleImputer is not None and isinstance(est, SimpleImputer):
+                if not hasattr(est, "_fill_dtype"):
+                    fill_dtype = getattr(est, "_fit_dtype", None)
+                    stats = getattr(est, "statistics_", None)
+                    if fill_dtype is None and stats is not None:
+                        fill_dtype = getattr(stats, "dtype", None)
+                    if fill_dtype is None:
+                        fill_dtype = object if getattr(est, "strategy", None) == "constant" else float
+                    try:
+                        est._fill_dtype = fill_dtype
+                        repairs.append("SimpleImputer._fill_dtype")
+                    except Exception:
+                        pass
+
+                # Some very old/new cross-version pickles may also miss these.
+                if not hasattr(est, "keep_empty_features"):
+                    try:
+                        est.keep_empty_features = False
+                        repairs.append("SimpleImputer.keep_empty_features")
+                    except Exception:
+                        pass
+                if not hasattr(est, "indicator_"):
+                    try:
+                        est.indicator_ = None
+                        repairs.append("SimpleImputer.indicator_")
+                    except Exception:
+                        pass
+
+    existing = bundle.get("__compat_repairs", [])
+    bundle["__compat_repairs"] = list(dict.fromkeys(list(existing) + repairs))
+    return bundle
+
+
 def read_metadata(path: str | Path = DEFAULT_METADATA_PATH) -> dict:
     p = Path(path)
     if not p.exists():
@@ -130,13 +248,16 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
                 artifact_metadata = _find_metadata_in_artifact_dir(extract_dir)
                 artifact_model_name = model_path.name
                 bundle = joblib.load(model_path)
+                bundle = _repair_sklearn_pickle_compat(bundle)
             elif suffix in {".joblib", ".pkl"}:
                 artifact_model_name = upload_name
                 bundle = joblib.load(upload_path)
+                bundle = _repair_sklearn_pickle_compat(bundle)
             else:
                 raise ValueError("Unsupported model upload. Please upload .zip, .joblib, or .pkl.")
     else:
         bundle = joblib.load(Path(default_path))
+        bundle = _repair_sklearn_pickle_compat(bundle)
         artifact_metadata = read_metadata()
 
     required = {"preprocessor", "feature_columns", "unit_model", "alloc_model"}

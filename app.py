@@ -93,6 +93,8 @@ if file is not None:
                 summary["artifact_metadata"] = artifact_meta
             if isinstance(bundle, dict):
                 summary["model_source"] = bundle.get("__artifact_model_name", "uploaded/included model")
+                if bundle.get("__compat_repairs"):
+                    summary["compatibility_repairs"] = bundle.get("__compat_repairs")
 
             st.session_state["out_df"] = out_df
             st.session_state["audit_df"] = audit_df
@@ -117,6 +119,8 @@ if "out_df" in st.session_state:
     c5.metric("Z - No Alloc overrides", f"{summary['z_no_alloc_overrides']:,}")
     if summary.get("model_source"):
         st.info(f"Model source used: `{summary['model_source']}`")
+    if summary.get("compatibility_repairs"):
+        st.warning("Applied sklearn compatibility repairs to uploaded model bundle: " + ", ".join(summary["compatibility_repairs"]))
     if isinstance(summary.get("artifact_metadata"), dict) and summary["artifact_metadata"]:
         with st.expander("Uploaded artifact metadata", expanded=False):
             st.json(summary["artifact_metadata"])
