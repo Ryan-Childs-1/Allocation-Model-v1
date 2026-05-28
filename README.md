@@ -73,3 +73,28 @@ This package includes an updated hosted-compatible base neural MLP artifact:
 - `continued_training_result.json`
 
 The base model was continued on the cached multi-file allocation dataset and the app will use it automatically until a `.keras` model is trained in the Advanced Training Session tab.
+
+## Z - No Alloc. override behavior
+
+This version no longer treats `Z - No Alloc.` rows as permanently blocked.
+
+During prediction, the simulator can allocate these rows when either:
+
+- the model predicts a high enough allocation probability and a positive FLM-unit class, or
+- the row has enough demand/need and `Alloc. Rec.` support to justify a conservative override.
+
+The sidebar exposes these controls:
+
+- **Allow Z - No Alloc. rows when model/demand justify it**
+- **Z - No Alloc override probability**
+- **Z - No Alloc minimum need / Alloc. Rec. units**
+
+The audit CSV includes:
+
+- `is_z_no_alloc`
+- `z_no_alloc_override`
+- `need_units`
+- `alloc_rec_units`
+- `reason`
+
+Final outputs remain integer FLM multiples or blank.

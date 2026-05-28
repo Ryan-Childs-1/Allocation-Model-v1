@@ -73,6 +73,9 @@ def predict_to_csv_dataframe(df: pd.DataFrame, model_dir: str | Path, cfg: Alloc
             allow_review_rows=cfg.allow_review_rows,
             alloc_rec_influence=cfg.alloc_rec_influence,
             prefer_left_dc=cfg.prefer_left_dc,
+            allow_no_alloc_rows=cfg.allow_no_alloc_rows,
+            no_alloc_min_probability=cfg.no_alloc_min_probability,
+            no_alloc_min_need_flm_units=cfg.no_alloc_min_need_flm_units,
         )
     units, prob, _ = predict_arrays(df, model_dir=model_dir)
     final_alloc, audit = apply_allocation_simulation(df, units, prob, cfg)

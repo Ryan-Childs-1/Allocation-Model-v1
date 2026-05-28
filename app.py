@@ -84,6 +84,9 @@ with st.sidebar:
     manual_threshold = st.slider("Manual probability threshold", 0.01, 0.95, min(max(default_threshold, 0.01), 0.95), 0.01)
     demand_extra = st.slider("Demand cap extra FLM", 0.0, 6.0, 1.0, 0.25)
     allow_review = st.checkbox("Allow Review rows", value=True)
+    allow_no_alloc_rows = st.checkbox("Allow Z - No Alloc. rows when model/demand justify it", value=True)
+    no_alloc_min_probability = st.slider("Z - No Alloc override probability", 0.10, 0.95, 0.65, 0.01)
+    no_alloc_min_need_flm_units = st.slider("Z - No Alloc minimum need / Alloc. Rec. units", 0.0, 10.0, 1.0, 0.5)
     prefer_left_dc = st.checkbox("Prefer Left DC over DC Avail", value=True)
     alloc_rec_influence = st.selectbox("Alloc. Rec. influence", ["feature_only", "soft_cap", "balanced", "hard_cap"], index=2)
     st.divider()
@@ -123,6 +126,9 @@ with t_predict:
                 allow_review_rows=allow_review,
                 alloc_rec_influence=alloc_rec_influence,
                 prefer_left_dc=prefer_left_dc,
+                allow_no_alloc_rows=allow_no_alloc_rows,
+                no_alloc_min_probability=no_alloc_min_probability,
+                no_alloc_min_need_flm_units=no_alloc_min_need_flm_units,
             )
             with st.spinner("Running neural prediction and sequential Left DC simulation..."):
                 out_df, audit_df = predict_to_csv_dataframe(df, MODEL_DIR, cfg, use_saved_threshold=use_saved_threshold)
@@ -134,6 +140,8 @@ with t_predict:
             c2.metric("Allocated rows", f"{int(final_num.gt(0).sum()):,}")
             c3.metric("Total Final Alloc", f"{int(final_num.sum()):,}")
             c4.metric("Mean probability", f"{audit_df['probability'].mean():.3f}")
+            if "z_no_alloc_override" in audit_df.columns:
+                st.metric("Z - No Alloc rows allocated by override", f"{int(pd.to_numeric(audit_df['z_no_alloc_override'], errors='coerce').fillna(0).sum()):,}")
             st.success("Completed. Final Alloc values are integers; no-allocation rows are blank.")
             base = Path(uploaded.name).stem
             st.download_button("Download completed allocation CSV", dataframe_to_csv_bytes(out_df), f"{base} - Allocation AI Output.csv", mime="text/csv")
