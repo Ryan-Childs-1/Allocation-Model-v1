@@ -17,11 +17,21 @@ class AllocationConfig:
     alloc_rec_influence: str = "balanced"  # feature_only, soft_cap, balanced, hard_cap
     prefer_left_dc: bool = True
 
-    # New in this version: Z - No Alloc. rows are no longer hard-blocked.
-    # They can be allocated when the neural model or workbook demand signals justify it.
+    # Z - No Alloc. rows are not hard-blocked; they can be allocated when the
+    # neural model or workbook demand signals justify it.
     allow_no_alloc_rows: bool = True
     no_alloc_min_probability: float = 0.65
     no_alloc_min_need_flm_units: float = 1.0
+
+    # Review rows are intentionally handled in multiple passes.
+    # Pass 1 is a conservative zero/blank scan. Passes 2 and 3 may add more
+    # inventory to the same Review rows if demand, Alloc. Rec., probability,
+    # and remaining Left DC still support it.
+    review_passes: int = 3
+    review_pass1_min_probability: float = 0.55
+    review_pass2_min_probability: float = 0.70
+    review_pass3_min_probability: float = 0.85
+    review_pass_max_add_flm_units: float = 1.0
 
 
 def _num_series(df: pd.DataFrame, field: str, default: float = 0.0) -> pd.Series:
@@ -67,12 +77,19 @@ def apply_allocation_simulation(
 ) -> Tuple[pd.Series, pd.DataFrame]:
     """Convert neural integer-unit predictions into valid Final Alloc integers/blanks.
 
-    Simulation preserves original row order and reduces remaining DC by item after each allocation.
+    Simulation preserves input row order in the final CSV and reduces remaining DC by
+    item after each accepted allocation.
 
-    Important behavior:
-    - Allocate and Review rows are eligible normally.
-    - Z - No Alloc. rows are now eligible only when the model/demand signals justify it.
-    - All final values remain integer FLM multiples or blank.
+    Review-specific behavior:
+    - Non-Review rows are processed once in original row order.
+    - Review rows are then intentionally processed up to three times.
+      * Pass 1 is a conservative zero/blank scan: it is designed to catch Review
+        rows that the model predicted as zero but the workbook demand / Alloc. Rec.
+        signal says should receive at least one FLM.
+      * Pass 2 can add one additional FLM unit when model/demand signals are solid.
+      * Pass 3 can add a final incremental allocation when confidence is highest.
+    - Each Review pass sees the reduced item-level Left DC from previous passes.
+    - Final values remain integer FLM multiples or blank.
     """
     df = original_df.copy()
     n = len(df)
@@ -123,111 +140,261 @@ def apply_allocation_simulation(
         else:
             remaining[it] = 0.0
 
-    final_alloc = []
-    audit_rows: List[dict] = []
-    for pos, idx in enumerate(df.index):
-        it = item.loc[idx]
+    final_by_idx = {idx: 0 for idx in df.index}
+    audit_by_idx: dict[object, dict] = {}
+
+    review_passes = int(getattr(cfg, "review_passes", 3) or 3)
+    review_passes = max(1, min(review_passes, 3))
+    review_thresholds = {
+        1: float(getattr(cfg, "review_pass1_min_probability", 0.55)),
+        2: float(getattr(cfg, "review_pass2_min_probability", 0.70)),
+        3: float(getattr(cfg, "review_pass3_min_probability", 0.85)),
+    }
+    max_review_add_units = max(float(getattr(cfg, "review_pass_max_add_flm_units", 1.0) or 1.0), 0.0)
+
+    def _base_row_values(pos: int, idx):
         f = max(int(flm.loc[idx]), 1)
         prob = float(probabilities[pos])
         units = max(int(predicted_units[pos]), 0)
         raw_alloc = int(units * f)
-        left_before = float(remaining.get(it, 0.0))
         row_flag = flag.loc[idx]
-        reasons = []
-
         is_no_alloc = _is_z_no_alloc_flag(row_flag)
         is_review = "REVIEW" in row_flag
         is_allocate = ("ALLOC" in row_flag) and not is_no_alloc
 
-        # Demand-protective cap: do not push supply beyond demand basis + extra FLM buffer.
-        demand_cap = max(
+        demand_cap_no_alloc_rec = max(
             0.0,
             float(demand_basis.loc[idx]) + float(cfg.demand_cap_extra_flm) * f - float(supply.loc[idx]),
         )
-        demand_cap_before_alloc_rec = demand_cap
-
+        demand_cap = demand_cap_no_alloc_rec
         if cfg.alloc_rec_influence == "hard_cap" and alloc_rec.loc[idx] > 0:
             demand_cap = min(demand_cap, float(alloc_rec.loc[idx]))
         elif cfg.alloc_rec_influence == "balanced" and alloc_rec.loc[idx] > 0:
             demand_cap = min(demand_cap, max(float(alloc_rec.loc[idx]) + f, f))
         elif cfg.alloc_rec_influence == "soft_cap" and alloc_rec.loc[idx] > 0:
             demand_cap = min(demand_cap, max(float(alloc_rec.loc[idx]) + 2 * f, f))
-        # feature_only: no alloc rec cap.
 
-        need_units = max(0.0, demand_cap_before_alloc_rec / f)
+        need_units = max(0.0, demand_cap_no_alloc_rec / f)
         alloc_rec_units = max(0.0, float(alloc_rec.loc[idx]) / f) if f else 0.0
+        return {
+            "f": f,
+            "prob": prob,
+            "units": units,
+            "raw_alloc": raw_alloc,
+            "row_flag": row_flag,
+            "is_no_alloc": is_no_alloc,
+            "is_review": is_review,
+            "is_allocate": is_allocate,
+            "demand_cap": float(demand_cap),
+            "demand_cap_no_alloc_rec": float(demand_cap_no_alloc_rec),
+            "need_units": float(need_units),
+            "alloc_rec_units": float(alloc_rec_units),
+        }
 
-        eligible = is_allocate or (cfg.allow_review_rows and is_review)
+    def _init_audit(pos: int, idx, vals: dict) -> dict:
+        return {
+            "row_order": int(df.get("__row_order", pd.Series(range(n), index=df.index)).loc[idx]),
+            "excel_row": int(df.get("__excel_row", pd.Series(range(2, n + 2), index=df.index)).loc[idx]),
+            "item": item.loc[idx],
+            "flag": vals["row_flag"],
+            "is_review": bool(vals["is_review"]),
+            "is_z_no_alloc": bool(vals["is_no_alloc"]),
+            "z_no_alloc_override": False,
+            "probability": vals["prob"],
+            "predicted_units": vals["units"],
+            "flm": vals["f"],
+            "raw_neural_alloc": vals["raw_alloc"],
+            "need_units": vals["need_units"],
+            "alloc_rec_units": vals["alloc_rec_units"],
+            "demand_basis": float(demand_basis.loc[idx]),
+            "demand_cap": vals["demand_cap"],
+            "alloc_rec": float(alloc_rec.loc[idx]),
+            "left_dc_before": None,
+            "final_alloc": "",
+            "left_dc_after": None,
+            "review_passes_attempted": 0,
+            "review_pass_1_added": 0,
+            "review_pass_2_added": 0,
+            "review_pass_3_added": 0,
+            "review_total_added": 0,
+            "allocated_on_pass": "",
+            "reason": "",
+        }
 
-        # New behavior: Z - No Alloc. can be considered when necessary.
-        no_alloc_override = False
-        if is_no_alloc:
-            model_override = prob >= float(cfg.no_alloc_min_probability) and raw_alloc >= f
+    def _available_after_existing(idx, vals: dict, left_before: float) -> float:
+        current = float(final_by_idx.get(idx, 0))
+        # Demand cap applies to the row's total allocation, so available increment is cap minus current.
+        return max(0.0, min(left_before, vals["demand_cap"] - current))
+
+    def _commit_allocation(idx, vals: dict, desired_increment: float, pass_label: str, reasons: list[str]) -> int:
+        it = item.loc[idx]
+        f = vals["f"]
+        left_before = float(remaining.get(it, 0.0))
+        inc_cap = _available_after_existing(idx, vals, left_before)
+        increment = _round_down_to_flm(min(float(desired_increment), inc_cap), f)
+        if increment <= 0:
+            reasons.append(f"{pass_label}_rounded_or_capped_to_blank")
+            return 0
+
+        remaining[it] = max(0.0, left_before - increment)
+        final_by_idx[idx] = int(final_by_idx.get(idx, 0) + increment)
+        audit = audit_by_idx.setdefault(idx, _init_audit(0, idx, vals))
+        if audit["left_dc_before"] is None:
+            audit["left_dc_before"] = left_before
+        audit["left_dc_after"] = float(remaining[it])
+        audit["final_alloc"] = int(final_by_idx[idx])
+        audit["review_total_added"] = int(audit.get("review_total_added", 0) + increment) if vals["is_review"] else audit.get("review_total_added", 0)
+        if vals["is_review"]:
+            pass_num = int(pass_label.replace("review_pass_", "")) if pass_label.startswith("review_pass_") else 0
+            if pass_num in (1, 2, 3):
+                key = f"review_pass_{pass_num}_added"
+                audit[key] = int(audit.get(key, 0) + increment)
+                existing_passes = str(audit.get("allocated_on_pass", ""))
+                audit["allocated_on_pass"] = (existing_passes + ("," if existing_passes else "") + str(pass_num))
+        reasons.append(f"{pass_label}_approved")
+        return int(increment)
+
+    # ------------------------------------------------------------------
+    # Pass A: process all non-Review rows once in original order.
+    # ------------------------------------------------------------------
+    for pos, idx in enumerate(df.index):
+        vals = _base_row_values(pos, idx)
+        audit = _init_audit(pos, idx, vals)
+        reasons: list[str] = []
+        audit_by_idx[idx] = audit
+
+        if vals["is_review"]:
+            reasons.append("deferred_to_review_three_pass_logic")
+            audit["reason"] = "; ".join(reasons)
+            continue
+
+        it = item.loc[idx]
+        left_before = float(remaining.get(it, 0.0))
+        audit["left_dc_before"] = left_before
+        eligible = vals["is_allocate"]
+
+        # Z - No Alloc. can be considered when necessary.
+        if vals["is_no_alloc"]:
+            model_override = vals["prob"] >= float(cfg.no_alloc_min_probability) and vals["raw_alloc"] >= vals["f"]
             demand_override = (
-                alloc_rec_units >= float(cfg.no_alloc_min_need_flm_units)
-                and need_units >= float(cfg.no_alloc_min_need_flm_units)
+                vals["alloc_rec_units"] >= float(cfg.no_alloc_min_need_flm_units)
+                and vals["need_units"] >= float(cfg.no_alloc_min_need_flm_units)
             )
             if cfg.allow_no_alloc_rows and left_before > 0 and (model_override or demand_override):
                 eligible = True
-                no_alloc_override = True
+                audit["z_no_alloc_override"] = True
                 reasons.append("z_no_alloc_overridden_by_model_or_demand")
-                # If the model predicted zero because the historical flag was usually no-allocation,
-                # seed a conservative integer allocation from Alloc. Rec. / demand need.
-                if raw_alloc < f:
-                    seed_units = int(np.floor(max(min(alloc_rec_units, need_units), 0)))
-                    if seed_units < 1 and need_units >= cfg.no_alloc_min_need_flm_units:
+                if vals["raw_alloc"] < vals["f"]:
+                    seed_units = int(np.floor(max(min(vals["alloc_rec_units"], vals["need_units"]), 0)))
+                    if seed_units < 1 and vals["need_units"] >= cfg.no_alloc_min_need_flm_units:
                         seed_units = 1
-                    raw_alloc = max(raw_alloc, seed_units * f)
+                    vals["raw_alloc"] = max(vals["raw_alloc"], seed_units * vals["f"])
             else:
                 eligible = False
                 reasons.append("z_no_alloc_not_needed")
 
         if not eligible:
-            raw_alloc = 0
-            if not is_no_alloc:
-                reasons.append("not_allocate_or_review")
-        if prob < cfg.min_probability and not no_alloc_override:
-            raw_alloc = 0
+            reasons.append("not_allocate_row")
+        elif vals["prob"] < cfg.min_probability:
             reasons.append("below_probability_threshold")
-        if left_before <= 0:
-            raw_alloc = 0
+        elif left_before <= 0:
             reasons.append("no_left_dc")
-
-        capped = min(float(raw_alloc), left_before, demand_cap)
-        final = _round_down_to_flm(capped, f)
-        if final <= 0:
-            output_value = ""
-            final_int = 0
-            if not reasons:
-                reasons.append("rounded_or_capped_to_blank")
         else:
-            output_value = int(final)
-            final_int = int(final)
-            if final_int < raw_alloc:
+            added = _commit_allocation(idx, vals, vals["raw_alloc"], "main_pass", reasons)
+            if added and added < vals["raw_alloc"]:
                 reasons.append("capped_by_dc_demand_or_alloc_rec")
-            else:
-                reasons.append("approved")
-        remaining[it] = max(0.0, left_before - final_int)
-        final_alloc.append(output_value)
-        audit_rows.append({
-            "row_order": int(df.get("__row_order", pd.Series(range(n), index=df.index)).loc[idx]),
-            "excel_row": int(df.get("__excel_row", pd.Series(range(2, n + 2), index=df.index)).loc[idx]),
-            "item": it,
-            "flag": row_flag,
-            "is_z_no_alloc": bool(is_no_alloc),
-            "z_no_alloc_override": bool(no_alloc_override),
-            "probability": prob,
-            "predicted_units": units,
-            "flm": f,
-            "raw_neural_alloc": raw_alloc,
-            "need_units": float(need_units),
-            "alloc_rec_units": float(alloc_rec_units),
-            "demand_basis": float(demand_basis.loc[idx]),
-            "demand_cap": float(demand_cap),
-            "alloc_rec": float(alloc_rec.loc[idx]),
-            "left_dc_before": left_before,
-            "final_alloc": final_int if final_int > 0 else "",
-            "left_dc_after": float(remaining[it]),
-            "reason": "; ".join(reasons),
-        })
-    return pd.Series(final_alloc, index=df.index, name="Final Alloc."), pd.DataFrame(audit_rows)
+
+        audit["left_dc_after"] = float(remaining.get(it, 0.0))
+        audit["final_alloc"] = int(final_by_idx[idx]) if final_by_idx[idx] > 0 else ""
+        if not reasons and final_by_idx[idx] <= 0:
+            reasons.append("blank")
+        audit["reason"] = "; ".join(reasons)
+
+    # ------------------------------------------------------------------
+    # Pass B: intentionally revisit Review rows up to three times.
+    # ------------------------------------------------------------------
+    review_positions = [(pos, idx) for pos, idx in enumerate(df.index) if "REVIEW" in flag.loc[idx]]
+
+    for pass_num in range(1, review_passes + 1):
+        threshold = review_thresholds.get(pass_num, cfg.min_probability)
+        for pos, idx in review_positions:
+            vals = _base_row_values(pos, idx)
+            audit = audit_by_idx.setdefault(idx, _init_audit(pos, idx, vals))
+            audit["review_passes_attempted"] = int(audit.get("review_passes_attempted", 0) + 1)
+            reasons = [r for r in str(audit.get("reason", "")).split("; ") if r]
+
+            it = item.loc[idx]
+            left_before = float(remaining.get(it, 0.0))
+            if audit.get("left_dc_before") is None:
+                audit["left_dc_before"] = left_before
+
+            if not cfg.allow_review_rows:
+                reasons.append(f"review_pass_{pass_num}_review_rows_disabled")
+                audit["reason"] = "; ".join(dict.fromkeys(reasons))
+                audit["left_dc_after"] = left_before
+                continue
+            if left_before <= 0:
+                reasons.append(f"review_pass_{pass_num}_no_left_dc")
+                audit["reason"] = "; ".join(dict.fromkeys(reasons))
+                audit["left_dc_after"] = left_before
+                continue
+
+            current_alloc = int(final_by_idx.get(idx, 0))
+            f = vals["f"]
+            raw_alloc = vals["raw_alloc"]
+            need_seed_units = int(np.floor(max(min(vals["alloc_rec_units"], vals["need_units"]), 0)))
+
+            desired_increment = 0
+            if pass_num == 1:
+                # First review pass intentionally looks for rows still at zero/blank.
+                # It is conservative and can seed one FLM when workbook demand signals justify it,
+                # even if the neural unit class predicted zero.
+                if current_alloc == 0:
+                    zero_scan_supported = (
+                        vals["need_units"] >= 1.0
+                        and (vals["alloc_rec_units"] >= 1.0 or vals["prob"] >= threshold)
+                    )
+                    if zero_scan_supported:
+                        desired_increment = max(f, min(max(raw_alloc, f), f))
+                        reasons.append("review_pass_1_zero_scan_supported")
+                    else:
+                        reasons.append("review_pass_1_zero_scan_no_action")
+                else:
+                    reasons.append("review_pass_1_already_allocated")
+            elif pass_num == 2:
+                # Second pass can add one FLM when probability or workbook recommendation is strong.
+                enough_signal = vals["prob"] >= threshold or need_seed_units >= 1
+                target_total = max(raw_alloc, min(int(np.floor(vals["need_units"])) * f, raw_alloc + f))
+                if enough_signal and target_total > current_alloc:
+                    desired_increment = min(target_total - current_alloc, max_review_add_units * f)
+                    reasons.append("review_pass_2_incremental_add_supported")
+                else:
+                    reasons.append("review_pass_2_no_action")
+            elif pass_num == 3:
+                # Third pass is the highest-confidence final top-up. It only adds more when the
+                # neural probability is high or Alloc. Rec. / need still clearly exceeds current allocation.
+                enough_signal = vals["prob"] >= threshold or (vals["alloc_rec_units"] >= (current_alloc / f + 1) and vals["need_units"] >= (current_alloc / f + 1))
+                target_total = max(raw_alloc, int(np.floor(min(vals["alloc_rec_units"], vals["need_units"]))) * f)
+                if enough_signal and target_total > current_alloc:
+                    desired_increment = min(target_total - current_alloc, max_review_add_units * f)
+                    reasons.append("review_pass_3_final_top_up_supported")
+                else:
+                    reasons.append("review_pass_3_no_action")
+
+            if desired_increment > 0:
+                before_add = int(final_by_idx.get(idx, 0))
+                added = _commit_allocation(idx, vals, desired_increment, f"review_pass_{pass_num}", reasons)
+                if added and int(final_by_idx.get(idx, 0)) < before_add + desired_increment:
+                    reasons.append(f"review_pass_{pass_num}_capped_by_dc_demand_or_alloc_rec")
+            # Preserve the row-level after-state from the last pass that actually changed
+            # this row. If no allocation has happened for the row, record the current DC
+            # state so the audit still explains why it stayed blank.
+            if desired_increment > 0 or not audit.get("left_dc_after"):
+                audit["left_dc_after"] = float(remaining.get(it, 0.0))
+            audit["final_alloc"] = int(final_by_idx[idx]) if final_by_idx[idx] > 0 else ""
+            audit["reason"] = "; ".join(dict.fromkeys(reasons))
+
+    final_alloc = [int(final_by_idx[idx]) if int(final_by_idx.get(idx, 0)) > 0 else "" for idx in df.index]
+    audit_rows = [audit_by_idx.get(idx, {}) for idx in df.index]
+    audit_df = pd.DataFrame(audit_rows)
+    return pd.Series(final_alloc, index=df.index, name="Final Alloc."), audit_df
