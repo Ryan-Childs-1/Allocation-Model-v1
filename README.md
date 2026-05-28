@@ -1,97 +1,51 @@
-# Allocation AI Predictor — Three-Pass Review Version
+# Allocation AI Predictor — Updated Advanced Model
 
-This is the simplified prediction-only Streamlit app. It accepts allocation files and returns a completed CSV plus audit outputs.
+This is the simplified prediction-only Streamlit app for Allocation AI.
+
+## What this package includes
+
+- `app.py` — Streamlit entry point
+- `allocation_ai_base_sklearn_mlp.joblib` — included app-compatible model updated from the latest Jupyter training artifact
+- `allocation_ai_metadata.json` — validation metrics and recommended threshold
+- `allocation_ai_threshold_sweep.csv` — threshold sweep for the app-compatible model
+- `allocation_ai_torch_metadata.json` — reference metrics from the PyTorch training checkpoint
+- `allocation_ai_torch_threshold_sweep.csv` — threshold sweep from the PyTorch model
+
+## Updated model summary
+
+The included base model was updated from `allocation_ai_jupyter_trained_artifacts.zip`.
+
+Validation findings for the included app-compatible model:
+
+- Best threshold: `0.85`
+- Precision: `0.9395`
+- Recall: `0.9176`
+- F1: `0.9284`
+- Unit accuracy: `0.9880`
+- Positive unit accuracy: `0.7504`
+- Unit MAE: `0.0141`
+- False positive rate: `0.0024`
+
+The app uses the exported app-compatible `.joblib` model for hosted prediction. The PyTorch checkpoint in the artifact had slightly stronger metrics, but this hosted prediction app intentionally avoids requiring PyTorch.
 
 ## Key behavior
 
 - Upload `.xlsb`, `.xlsx`, or `.csv` allocation files.
-- Optionally upload a newer trained artifact `.zip`, `.joblib`, or `.pkl` model bundle.
-- Predict integer-only `Final Alloc.` values.
-- Preserve the original row order in the completed CSV.
-- Return blank Final Alloc cells when no allocation is recommended.
-- Simulate item-level `Left DC` as allocations are made.
-- Allow `Z - No Alloc.` rows to receive allocation only when model/demand signals justify it.
-- Process `Review` rows in up to **three separate passes**.
-- Do **not** cap Review additions by a maximum number of FLMs per pass.
+- Preserves original row order in the output CSV.
+- Overwrites only `Final Alloc.` in memory.
+- Final Alloc outputs are integers or blanks.
+- Review rows are handled with three intentional passes.
+- There is no max-FLM-add-per-pass cap.
+- Z - No Alloc rows can be overridden when model/demand signals justify it.
+- The app can still accept a newer `.zip`, `.joblib`, or `.pkl` model artifact in the sidebar.
 
-## Three-pass Review logic
+## Run
 
-Review rows are intentionally revisited after the normal allocation pass:
-
-1. **Review pass 1 — zero/blank scan**
-   - Looks for Review rows still at zero/blank.
-   - Can seed allocation when demand, Alloc. Rec., or model confidence supports it.
-
-2. **Review pass 2 — add justified remaining amount**
-   - Can add the full remaining model/demand-supported amount when the row still has need and remaining Left DC.
-   - There is no artificial max-FLM-per-pass cap.
-
-3. **Review pass 3 — final top-up**
-   - Highest-confidence final pass.
-   - Can add the full remaining justified amount when the model and/or Alloc. Rec. strongly support it.
-   - There is no artificial max-FLM-per-pass cap.
-
-Each pass sees the updated remaining item-level Left DC from previous allocations. Final outputs are still constrained by Left DC, demand protection, Alloc. Rec. influence mode, probability thresholds, and integer FLM rounding.
-
-## Audit output
-
-The audit CSV includes review-specific fields:
-
-```text
-review_passes_attempted
-review_pass_1_added
-review_pass_2_added
-review_pass_3_added
-review_total_added
-allocated_on_pass
+```bash
+pip install -r requirements.txt
+streamlit run app.py
 ```
 
-These fields show exactly which pass added inventory to a Review row.
+## Deployment
 
-## Files
-
-All files are flat for GitHub upload:
-
-```text
-app.py
-allocation_simulator.py
-data_io.py
-features.py
-neural_model.py
-predictor.py
-schema.py
-requirements.txt
-runtime.txt
-README.md
-allocation_ai_base_sklearn_mlp.joblib
-allocation_ai_metadata.json
-```
-
-## Deploy
-
-Use Streamlit with `app.py` as the entry point. The included `runtime.txt` requests Python 3.11.
-
-## Uploading newer trained artifacts
-
-The sidebar accepts the full artifact zip from the Jupyter trainer. The app will search the zip for:
-
-```text
-allocation_ai_app_compatible_model.joblib
-```
-
-Raw `.pt` PyTorch checkpoints are training checkpoints and are not used directly by this prediction-only app.
-
-
-## Compatibility with improved Jupyter trainer
-
-This prediction app now generates the same improved feature set used by the latest Jupyter trainer, including:
-
-- Three-pass Review context features
-- Item-level demand / need / Alloc. Rec. totals
-- Item-level scarcity and DC pressure ratios
-- Row-order cumulative need and Alloc. Rec. features
-- Within-item rank and percentile-rank features
-
-This means artifact ZIPs trained with the improved Jupyter package can be uploaded directly into the sidebar. Older base models still work because prediction aligns the generated feature frame back to the model's saved `feature_columns`.
-
-Review rows still have no artificial max-FLM-per-pass cap; allocation is limited only by Left DC, demand protection, Alloc. Rec. influence mode, probability thresholds, and integer FLM rounding.
+This package is flat and designed for Streamlit hosting. `runtime.txt` pins Python 3.11.

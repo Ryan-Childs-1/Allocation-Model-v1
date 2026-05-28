@@ -35,7 +35,7 @@ with st.sidebar:
         st.info("Using included base model")
 
     st.header("Prediction settings")
-    default_threshold = float(meta.get("recommended_threshold", 0.35)) if meta else 0.35
+    default_threshold = float(meta.get("recommended_threshold", meta.get("best_threshold", 0.35))) if meta else 0.35
     min_probability = st.slider("Minimum allocation probability", 0.01, 0.95, min(max(default_threshold, 0.01), 0.95), 0.01)
     demand_extra = st.slider("Demand cap extra FLM", 0.0, 6.0, 1.0, 0.25)
     allow_review = st.checkbox("Allow Review rows", value=True)
@@ -60,11 +60,51 @@ with st.sidebar:
 
 if meta:
     best = meta.get("best_validation_metrics", {}) if isinstance(meta.get("best_validation_metrics", {}), dict) else {}
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric("Base rows trained", f"{int(meta.get('rows_total', meta.get('rows_trained', meta.get('base_model_rows_trained', 0)))):,}")
-    c2.metric("Base F1", f"{float(meta.get('validation_f1', best.get('f1', 0))):.3f}")
-    c3.metric("Base precision", f"{float(meta.get('validation_precision', best.get('precision', 0))):.3f}")
-    c4.metric("Base recall", f"{float(meta.get('validation_recall', best.get('recall', 0))):.3f}")
+    st.markdown("### Included model summary")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Rows trained", f"{int(meta.get('rows_total', meta.get('rows_trained', meta.get('base_model_rows_trained', 0)))):,}")
+    c2.metric("Best threshold", f"{float(meta.get('best_threshold', meta.get('recommended_threshold', 0))):.2f}")
+    c3.metric("F1", f"{float(meta.get('validation_f1', best.get('f1', 0))):.3f}")
+    c4.metric("Precision", f"{float(meta.get('validation_precision', best.get('precision', 0))):.3f}")
+    c5.metric("Recall", f"{float(meta.get('validation_recall', best.get('recall', 0))):.3f}")
+
+    c6, c7, c8, c9 = st.columns(4)
+    c6.metric("Unit accuracy", f"{float(best.get('unit_accuracy', 0)):.3f}")
+    c7.metric("Positive unit accuracy", f"{float(best.get('positive_unit_accuracy', 0)):.3f}")
+    c8.metric("Unit MAE", f"{float(best.get('unit_mae', 0)):.4f}")
+    c9.metric("False positive rate", f"{float(best.get('false_positive_rate', 0)):.4f}")
+
+    sweep_path = Path("allocation_ai_threshold_sweep.csv")
+    if sweep_path.exists():
+        with st.expander("Included model threshold sweep", expanded=False):
+            try:
+                st.dataframe(pd.read_csv(sweep_path), use_container_width=True, height=300)
+            except Exception as exc:
+                st.caption(f"Could not read threshold sweep: {exc}")
+
+    torch_meta_path = Path("allocation_ai_torch_metadata.json")
+    if torch_meta_path.exists():
+        with st.expander("Training findings from PyTorch model", expanded=False):
+            try:
+                torch_meta = json.loads(torch_meta_path.read_text(encoding="utf-8"))
+                torch_best = torch_meta.get("best_validation_metrics", {})
+                st.write(
+                    "The uploaded trainer also produced a PyTorch checkpoint. "
+                    "This hosted prediction app uses the exported app-compatible model, "
+                    "but the PyTorch training metrics are shown here for comparison."
+                )
+                st.json({
+                    "torch_backend": torch_meta.get("backend"),
+                    "torch_best_threshold": torch_meta.get("best_threshold"),
+                    "torch_precision": torch_best.get("precision"),
+                    "torch_recall": torch_best.get("recall"),
+                    "torch_f1": torch_best.get("f1"),
+                    "torch_unit_accuracy": torch_best.get("unit_accuracy"),
+                    "torch_positive_unit_accuracy": torch_best.get("positive_unit_accuracy"),
+                    "torch_unit_mae": torch_best.get("unit_mae"),
+                })
+            except Exception as exc:
+                st.caption(f"Could not read PyTorch metadata: {exc}")
 
 st.markdown("### 1. Upload allocation file")
 file = st.file_uploader("Upload .xlsb, .xlsx, or .csv allocation file", type=["xlsb", "xlsx", "csv"])
