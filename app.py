@@ -16,38 +16,9 @@ from schema import ColumnDiagnostics, build_column_map
 st.set_page_config(page_title="Allocation AI Predictor", page_icon="🎯", layout="wide")
 
 st.title("🎯 Allocation AI Predictor")
-st.caption("Prediction-only app · bundled with your Model v2 AI · upload allocation file · optionally upload newer artifacts zip · download completed CSV")
+st.caption("Prediction-only app · upload allocation file · optionally upload updated model artifacts zip · download completed CSV")
 
 meta = read_metadata()
-
-def _metric_from_meta(meta: dict, *keys, default=0.0):
-    """Read metrics from either older flat metadata or newer Model v2 nested metadata."""
-    for key in keys:
-        cur = meta
-        ok = True
-        for part in key.split('.'):
-            if isinstance(cur, dict) and part in cur:
-                cur = cur[part]
-            else:
-                ok = False
-                break
-        if ok and cur is not None:
-            return cur
-    return default
-
-def _threshold_from_meta(meta: dict, default=0.35) -> float:
-    val = _metric_from_meta(
-        meta,
-        "recommended_threshold",
-        "best_threshold",
-        "best_validation_metrics.threshold",
-        default=default,
-    )
-    try:
-        return float(val)
-    except Exception:
-        return float(default)
-
 with st.sidebar:
     st.header("Model")
     uploaded_model = st.file_uploader(
@@ -61,10 +32,10 @@ with st.sidebar:
     if uploaded_model:
         st.success(f"Using uploaded model/artifacts: {uploaded_model.name}")
     else:
-        st.info("Using included Model v2 AI")
+        st.info("Using included base model")
 
     st.header("Prediction settings")
-    default_threshold = _threshold_from_meta(meta, 0.35) if meta else 0.35
+    default_threshold = float(meta.get("recommended_threshold", 0.35)) if meta else 0.35
     min_probability = st.slider("Minimum allocation probability", 0.01, 0.95, min(max(default_threshold, 0.01), 0.95), 0.01)
     demand_extra = st.slider("Demand cap extra FLM", 0.0, 6.0, 1.0, 0.25)
     allow_review = st.checkbox("Allow Review rows", value=True)
@@ -80,19 +51,12 @@ with st.sidebar:
     )
 
 if meta:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    rows_trained = int(_metric_from_meta(meta, "rows_trained", "rows_total", "rows_train", "base_model_rows_trained", default=0) or 0)
-    f1 = float(_metric_from_meta(meta, "validation_f1", "best_validation_metrics.f1", default=0) or 0)
-    precision = float(_metric_from_meta(meta, "validation_precision", "best_validation_metrics.precision", default=0) or 0)
-    recall = float(_metric_from_meta(meta, "validation_recall", "best_validation_metrics.recall", default=0) or 0)
-    threshold = _threshold_from_meta(meta, 0.35)
-    c1.metric("Model v2 rows", f"{rows_trained:,}")
-    c2.metric("Validation F1", f"{f1:.3f}")
-    c3.metric("Precision", f"{precision:.3f}")
-    c4.metric("Recall", f"{recall:.3f}")
-    c5.metric("Threshold", f"{threshold:.2f}")
-    with st.expander("Included Model v2 metadata", expanded=False):
-        st.json(meta)
+    best = meta.get("best_validation_metrics", {}) if isinstance(meta.get("best_validation_metrics", {}), dict) else {}
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Base rows trained", f"{int(meta.get('rows_total', meta.get('rows_trained', meta.get('base_model_rows_trained', 0)))):,}")
+    c2.metric("Base F1", f"{float(meta.get('validation_f1', best.get('f1', 0))):.3f}")
+    c3.metric("Base precision", f"{float(meta.get('validation_precision', best.get('precision', 0))):.3f}")
+    c4.metric("Base recall", f"{float(meta.get('validation_recall', best.get('recall', 0))):.3f}")
 
 st.markdown("### 1. Upload allocation file")
 file = st.file_uploader("Upload .xlsb, .xlsx, or .csv allocation file", type=["xlsb", "xlsx", "csv"])

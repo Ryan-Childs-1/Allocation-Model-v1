@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any, Tuple
 
 import joblib
-import warnings
 import numpy as np
 import pandas as pd
 
@@ -25,13 +24,15 @@ DEFAULT_METADATA_PATH = Path("allocation_ai_metadata.json")
 # scikit-learn pickle compatibility helpers
 # -----------------------------------------------------------------------------
 def _walk_estimator_tree(obj: Any, seen: set[int] | None = None):
-    """Yield sklearn-like objects contained inside pipelines/column transformers.
+    """Yield sklearn-like objects contained inside common estimator containers.
 
-    Model bundles are uploaded from Jupyter and then loaded by Streamlit. If the
-    two environments use different scikit-learn versions, older pickled objects
-    can be missing private attributes expected by newer sklearn releases. This
-    walker lets us patch those objects safely after joblib.load().
+    This intentionally walks both public sklearn containers and selected object
+    attributes because artifact zips may be trained under one sklearn version and
+    loaded under another. The compatibility issues normally surface only at
+    transform/predict time, so repairs must happen immediately after joblib.load().
     """
+    if obj is None:
+        return
     if seen is None:
         seen = set()
     oid = id(obj)
@@ -63,19 +64,29 @@ def _walk_estimator_tree(obj: Any, seen: set[int] | None = None):
         for _name, trans in transformer_list:
             yield from _walk_estimator_tree(trans, seen)
 
+    # Final defensive pass: walk a few nested sklearn attrs that sometimes hold
+    # cloned/fitted estimators but are not exposed through the containers above.
+    for attr in ("estimator", "estimator_", "base_estimator", "base_estimator_", "calibrated_classifiers_"):
+        try:
+            val = getattr(obj, attr, None)
+        except Exception:
+            val = None
+        if val is None:
+            continue
+        if isinstance(val, (list, tuple)):
+            for child in val:
+                yield from _walk_estimator_tree(child, seen)
+        else:
+            yield from _walk_estimator_tree(val, seen)
+
 
 def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
     """Repair known sklearn version-mismatch issues in uploaded model bundles.
 
-    The Jupyter trainer may create app-compatible bundles under sklearn 1.3.x,
-    while Streamlit hosting may load them under a newer sklearn. Newer sklearn
-    SimpleImputer expects a private attribute named `_fill_dtype` that older
-    pickles may not contain. Without this patch, prediction fails with:
-
-        AttributeError: 'SimpleImputer' object has no attribute '_fill_dtype'
-
-    This function only fills missing compatibility attributes; it does not
-    retrain or change model predictions.
+    Jupyter artifacts are often serialized with a different sklearn release than
+    Streamlit hosting uses. This function fills missing private attributes that
+    newer sklearn expects. It does not retrain the model or intentionally change
+    predictions; it only makes old pickles callable again.
     """
     if not isinstance(bundle, dict):
         return bundle
@@ -84,6 +95,10 @@ def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
         from sklearn.impute import SimpleImputer
     except Exception:
         SimpleImputer = None
+    try:
+        from sklearn.preprocessing import OneHotEncoder
+    except Exception:
+        OneHotEncoder = None
 
     repairs: list[str] = []
     root_objects = [
@@ -96,17 +111,25 @@ def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
         if root is None:
             continue
         for est in _walk_estimator_tree(root):
-            # sklearn >= 1.4/1.5 compatibility for older ColumnTransformer pickles.
-            # This is needed for safe repr/get_params in some hosted environments.
-            if est.__class__.__name__ == "ColumnTransformer" and not hasattr(est, "force_int_remainder_cols"):
-                try:
-                    est.force_int_remainder_cols = "deprecated"
-                    repairs.append("ColumnTransformer.force_int_remainder_cols")
-                except Exception:
-                    pass
+            cls_name = est.__class__.__name__
 
-            # sklearn >= 1.6/1.7 compatibility for older SimpleImputer pickles.
-            if SimpleImputer is not None and isinstance(est, SimpleImputer):
+            # sklearn newer compatibility for older ColumnTransformer pickles.
+            if cls_name == "ColumnTransformer":
+                if not hasattr(est, "force_int_remainder_cols"):
+                    try:
+                        est.force_int_remainder_cols = "deprecated"
+                        repairs.append("ColumnTransformer.force_int_remainder_cols")
+                    except Exception:
+                        pass
+                if not hasattr(est, "verbose_feature_names_out"):
+                    try:
+                        est.verbose_feature_names_out = True
+                        repairs.append("ColumnTransformer.verbose_feature_names_out")
+                    except Exception:
+                        pass
+
+            # sklearn newer compatibility for older SimpleImputer pickles.
+            if (SimpleImputer is not None and isinstance(est, SimpleImputer)) or cls_name == "SimpleImputer":
                 if not hasattr(est, "_fill_dtype"):
                     fill_dtype = getattr(est, "_fit_dtype", None)
                     stats = getattr(est, "statistics_", None)
@@ -119,8 +142,6 @@ def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
                         repairs.append("SimpleImputer._fill_dtype")
                     except Exception:
                         pass
-
-                # Some very old/new cross-version pickles may also miss these.
                 if not hasattr(est, "keep_empty_features"):
                     try:
                         est.keep_empty_features = False
@@ -133,11 +154,37 @@ def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
                         repairs.append("SimpleImputer.indicator_")
                     except Exception:
                         pass
+                if not hasattr(est, "add_indicator"):
+                    try:
+                        est.add_indicator = False
+                        repairs.append("SimpleImputer.add_indicator")
+                    except Exception:
+                        pass
+
+            # sklearn 1.2+ renamed OneHotEncoder(sparse -> sparse_output).
+            if (OneHotEncoder is not None and isinstance(est, OneHotEncoder)) or cls_name == "OneHotEncoder":
+                if not hasattr(est, "sparse_output"):
+                    try:
+                        est.sparse_output = getattr(est, "sparse", True)
+                        repairs.append("OneHotEncoder.sparse_output")
+                    except Exception:
+                        pass
+                if not hasattr(est, "_infrequent_enabled"):
+                    try:
+                        est._infrequent_enabled = False
+                        repairs.append("OneHotEncoder._infrequent_enabled")
+                    except Exception:
+                        pass
+                if not hasattr(est, "feature_name_combiner"):
+                    try:
+                        est.feature_name_combiner = "concat"
+                        repairs.append("OneHotEncoder.feature_name_combiner")
+                    except Exception:
+                        pass
 
     existing = bundle.get("__compat_repairs", [])
     bundle["__compat_repairs"] = list(dict.fromkeys(list(existing) + repairs))
     return bundle
-
 
 def read_metadata(path: str | Path = DEFAULT_METADATA_PATH) -> dict:
     p = Path(path)
@@ -154,17 +201,6 @@ def _load_json_safely(path: Path) -> dict:
         return json.loads(path.read_text(encoding="utf-8"))
     except Exception:
         return {}
-
-
-def _joblib_load_compat(path: Path):
-    """Load joblib models while keeping sklearn version warnings from cluttering Streamlit."""
-    try:
-        from sklearn.exceptions import InconsistentVersionWarning
-    except Exception:
-        InconsistentVersionWarning = Warning
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", InconsistentVersionWarning)
-        return joblib.load(path)
 
 
 def _pick_model_from_artifact_dir(root: Path) -> Path:
@@ -259,16 +295,16 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
                 model_path = _pick_model_from_artifact_dir(extract_dir)
                 artifact_metadata = _find_metadata_in_artifact_dir(extract_dir)
                 artifact_model_name = model_path.name
-                bundle = _joblib_load_compat(model_path)
+                bundle = joblib.load(model_path)
                 bundle = _repair_sklearn_pickle_compat(bundle)
             elif suffix in {".joblib", ".pkl"}:
                 artifact_model_name = upload_name
-                bundle = _joblib_load_compat(upload_path)
+                bundle = joblib.load(upload_path)
                 bundle = _repair_sklearn_pickle_compat(bundle)
             else:
                 raise ValueError("Unsupported model upload. Please upload .zip, .joblib, or .pkl.")
     else:
-        bundle = _joblib_load_compat(Path(default_path))
+        bundle = joblib.load(Path(default_path))
         bundle = _repair_sklearn_pickle_compat(bundle)
         artifact_metadata = read_metadata()
 
@@ -287,10 +323,17 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
     return bundle
 
 
-def predict_arrays(df: pd.DataFrame, bundle: dict) -> Tuple[np.ndarray, np.ndarray]:
-    X = build_feature_frame(df)
-    X = align_to_training_columns(X, list(bundle["feature_columns"]))
-    Xt = to_dense_float32(bundle["preprocessor"].transform(X.replace([np.inf, -np.inf], np.nan)))
+def _predict_chunk(X_chunk: pd.DataFrame, bundle: dict) -> Tuple[np.ndarray, np.ndarray]:
+    """Transform and predict one chunk.
+
+    Newer uploaded artifacts can use large sklearn ColumnTransformer outputs.
+    Processing the entire workbook at once can exceed hosted Streamlit memory,
+    especially after sparse one-hot output is converted to dense float32 for MLP
+    models. Chunking keeps memory bounded and fixes crashes that appear only
+    with the stronger Jupyter-trained model.
+    """
+    Xt = bundle["preprocessor"].transform(X_chunk.replace([np.inf, -np.inf], np.nan))
+    Xt = to_dense_float32(Xt)
 
     unit_model = bundle["unit_model"]
     alloc_model = bundle["alloc_model"]
@@ -303,6 +346,33 @@ def predict_arrays(df: pd.DataFrame, bundle: dict) -> Tuple[np.ndarray, np.ndarr
     else:
         prob = np.asarray(alloc_model.predict(Xt), dtype="float32")
     return units, np.asarray(prob, dtype="float32")
+
+
+def predict_arrays(df: pd.DataFrame, bundle: dict) -> Tuple[np.ndarray, np.ndarray]:
+    X = build_feature_frame(df)
+    X = align_to_training_columns(X, list(bundle["feature_columns"]))
+
+    # Hosted Streamlit memory guard. The older included model was small enough to
+    # predict in one pass, but stronger Jupyter artifacts can produce much larger
+    # dense arrays. Keep chunks modest; model prediction time remains acceptable.
+    chunk_size = int(bundle.get("prediction_chunk_size", 2500) or 2500)
+    chunk_size = max(250, min(chunk_size, 10000))
+
+    all_units = []
+    all_prob = []
+    for start in range(0, len(X), chunk_size):
+        end = min(start + chunk_size, len(X))
+        u, p = _predict_chunk(X.iloc[start:end], bundle)
+        all_units.append(u)
+        all_prob.append(p)
+
+    if all_units:
+        units = np.concatenate(all_units).astype(int)
+        prob = np.concatenate(all_prob).astype("float32")
+    else:
+        units = np.zeros(0, dtype=int)
+        prob = np.zeros(0, dtype="float32")
+    return units, prob
 
 
 def predict_to_outputs(df: pd.DataFrame, bundle: dict, cfg: AllocationConfig) -> Tuple[pd.DataFrame, pd.DataFrame, dict]:
