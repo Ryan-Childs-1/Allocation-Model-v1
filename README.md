@@ -59,3 +59,24 @@ streamlit run app.py
 - `Left DC` is simulated sequentially by item.
 - `Z - No Alloc.` rows can be allocated when the model and demand signals justify it, depending on sidebar settings.
 - The app does not train or retrain models. Use a separate training environment to produce updated `.joblib` bundles, then upload them here.
+
+
+## Uploading a trained artifact ZIP
+
+This prediction-only app can now accept the full artifact ZIP exported by the Jupyter trainer. The ZIP may contain:
+
+- PyTorch checkpoints such as `.pt` files
+- Keras checkpoints such as `.keras` files
+- training logs and threshold sweeps
+- metadata JSON files
+- the app-compatible model bundle
+
+The app will automatically search the ZIP and load the best app-compatible `.joblib` or `.pkl` bundle, with priority given to files named like:
+
+```text
+allocation_ai_app_compatible_model.joblib
+allocation_ai_prediction_model.joblib
+allocation_ai_base_sklearn_mlp.joblib
+```
+
+The raw checkpoint files are intentionally ignored by this simplified app. It expects the app-compatible compressed prediction bundle produced by the trainer.

@@ -16,18 +16,21 @@ from schema import ColumnDiagnostics, build_column_map
 st.set_page_config(page_title="Allocation AI Predictor", page_icon="🎯", layout="wide")
 
 st.title("🎯 Allocation AI Predictor")
-st.caption("Prediction-only app · upload allocation file · optionally upload updated model · download completed CSV")
+st.caption("Prediction-only app · upload allocation file · optionally upload updated model artifacts zip · download completed CSV")
 
 meta = read_metadata()
 with st.sidebar:
     st.header("Model")
     uploaded_model = st.file_uploader(
-        "Optional updated model bundle (.joblib)",
-        type=["joblib", "pkl"],
-        help="Upload a newer Allocation AI prediction bundle. If blank, the included base model is used.",
+        "Optional updated model bundle or training artifact ZIP",
+        type=["zip", "joblib", "pkl"],
+        help=(
+            "Upload either a direct .joblib/.pkl prediction bundle or the full artifact .zip "
+            "created by the Jupyter trainer. The app will find the app-compatible model inside the zip."
+        ),
     )
     if uploaded_model:
-        st.success(f"Using uploaded model: {uploaded_model.name}")
+        st.success(f"Using uploaded model/artifacts: {uploaded_model.name}")
     else:
         st.info("Using included base model")
 
@@ -81,9 +84,15 @@ if file is not None:
                 no_alloc_min_probability=float(no_alloc_prob),
                 no_alloc_min_need_flm_units=float(no_alloc_need),
             )
-            with st.spinner("Loading model and running sequential allocation simulation..."):
+            with st.spinner("Loading model/artifacts and running sequential allocation simulation..."):
                 bundle = load_model_bundle(uploaded_model)
                 out_df, audit_df, summary = predict_to_outputs(df, bundle, cfg)
+
+            artifact_meta = bundle.get("__artifact_metadata", {}) if isinstance(bundle, dict) else {}
+            if artifact_meta:
+                summary["artifact_metadata"] = artifact_meta
+            if isinstance(bundle, dict):
+                summary["model_source"] = bundle.get("__artifact_model_name", "uploaded/included model")
 
             st.session_state["out_df"] = out_df
             st.session_state["audit_df"] = audit_df
@@ -106,6 +115,11 @@ if "out_df" in st.session_state:
     c3.metric("Total Final Alloc", f"{summary['total_final_alloc']:,}")
     c4.metric("Mean probability", f"{summary['mean_probability']:.3f}")
     c5.metric("Z - No Alloc overrides", f"{summary['z_no_alloc_overrides']:,}")
+    if summary.get("model_source"):
+        st.info(f"Model source used: `{summary['model_source']}`")
+    if isinstance(summary.get("artifact_metadata"), dict) and summary["artifact_metadata"]:
+        with st.expander("Uploaded artifact metadata", expanded=False):
+            st.json(summary["artifact_metadata"])
 
     st.markdown("### 4. Preview")
     preview_cols = [c for c in ["Item", "Site", "Flag", "Final Alloc.", "Left DC", "Dc Avail", "Proj. Demand", "Alloc. Rec."] if c in out_df.columns]
@@ -131,4 +145,4 @@ if "out_df" in st.session_state:
     d3.download_button("Download output ZIP", zip_buf.getvalue(), "allocation_ai_prediction_output.zip", mime="application/zip")
 
 st.divider()
-st.caption("This version intentionally removes training and dataset-building. To update predictions, upload a newer .joblib model bundle in the sidebar.")
+st.caption("This version intentionally removes training and dataset-building. To update predictions, upload a newer .joblib/.pkl model bundle or a full training artifact .zip in the sidebar.")
