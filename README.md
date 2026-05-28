@@ -80,3 +80,18 @@ allocation_ai_app_compatible_model.joblib
 ```
 
 Raw `.pt` PyTorch checkpoints are training checkpoints and are not used directly by this prediction-only app.
+
+
+## Compatibility with improved Jupyter trainer
+
+This prediction app now generates the same improved feature set used by the latest Jupyter trainer, including:
+
+- Three-pass Review context features
+- Item-level demand / need / Alloc. Rec. totals
+- Item-level scarcity and DC pressure ratios
+- Row-order cumulative need and Alloc. Rec. features
+- Within-item rank and percentile-rank features
+
+This means artifact ZIPs trained with the improved Jupyter package can be uploaded directly into the sidebar. Older base models still work because prediction aligns the generated feature frame back to the model's saved `feature_columns`.
+
+Review rows still have no artificial max-FLM-per-pass cap; allocation is limited only by Left DC, demand protection, Alloc. Rec. influence mode, probability thresholds, and integer FLM rounding.
