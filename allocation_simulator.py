@@ -50,15 +50,28 @@ def _txt_series(df: pd.DataFrame, field: str) -> pd.Series:
 
 
 def _round_down_to_flm(x: float, flm: float) -> int:
+    """Return an integer allocation.
+
+    Normal allocations are rounded down to FLM multiples. However, when the
+    remaining available DC is positive but below one FLM, return the remaining
+    integer units instead of blanking the row. This supports low remaining counts
+    such as FLM=6, Left DC=4 -> Final Alloc=4.
+    """
     try:
         flm = int(round(float(flm)))
     except Exception:
         flm = 1
     if flm <= 0:
         flm = 1
-    if x < flm:
+    try:
+        x = float(x)
+    except Exception:
         return 0
-    return int(np.floor(float(x) / flm) * flm)
+    if not np.isfinite(x) or x <= 0:
+        return 0
+    if x < flm:
+        return int(max(0, np.floor(x)))
+    return int(np.floor(x / flm) * flm)
 
 
 def _is_z_no_alloc_flag(row_flag: str) -> bool:
@@ -88,7 +101,9 @@ def apply_allocation_simulation(
       * Pass 2 can add the remaining model/demand-supported amount.
       * Pass 3 can add any final top-up still supported by demand, Alloc. Rec., model confidence, and Left DC.
     - Each Review pass sees the reduced item-level Left DC from previous passes.
-    - Final values remain integer FLM multiples or blank.
+    - Final values are integer units or blank. Most allocations are FLM multiples,
+      but if remaining Left DC is positive and below one FLM, the app can allocate
+      those remaining units instead of incorrectly blanking the row.
     """
     df = original_df.copy()
     n = len(df)

@@ -1,0 +1,12 @@
+{
+  "threshold": 0.5,
+  "precision": 0.8433915211970074,
+  "recall": 0.07638794777973529,
+  "f1": 0.14008781376853618,
+  "unit_accuracy": 0.5816,
+  "positive_unit_accuracy": 0.06916022948005601,
+  "unit_mae": 1.83598,
+  "false_positive_rate": 0.011269425402864013,
+  "predicted_positive_rows": 2005,
+  "actual_positive_rows": 22137
+}

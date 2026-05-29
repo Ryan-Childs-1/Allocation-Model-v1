@@ -225,6 +225,8 @@ def _pick_model_from_artifact_dir(root: Path) -> Path:
         s = 0
         if "app_compatible" in name:
             s += 1000
+        if "camp" in name:
+            s += 250
         if "prediction" in name:
             s += 600
         if "base_sklearn_mlp" in name:
@@ -277,7 +279,7 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
       - alloc_model
     """
     artifact_metadata: dict = {}
-    artifact_model_name = "included base model"
+    artifact_model_name = "Base NN Model"
 
     if model_file is not None:
         upload_name = getattr(model_file, "name", "uploaded_model")
@@ -346,6 +348,139 @@ def _predict_chunk(X_chunk: pd.DataFrame, bundle: dict) -> Tuple[np.ndarray, np.
     else:
         prob = np.asarray(alloc_model.predict(Xt), dtype="float32")
     return units, np.asarray(prob, dtype="float32")
+
+
+
+# -----------------------------------------------------------------------------
+# Model inspection + prediction explanation helpers
+# -----------------------------------------------------------------------------
+def _simplify_feature_name(name: str) -> str:
+    """Map transformed sklearn feature names back to readable base feature names."""
+    text = str(name)
+    # Common ColumnTransformer names: num__num__d60, cat__cat__item_123
+    for prefix in ("num__", "cat__"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+    if text.startswith("num__"):
+        return text[len("num__"):]
+    if text.startswith("cat__"):
+        # Keep only the field name before one-hot category text where possible.
+        rest = text[len("cat__"):]
+        for field in ("site", "item", "upc", "flag"):
+            if rest == field or rest.startswith(field + "_"):
+                return field
+        return rest.split("_")[0]
+    return text.split("_")[0] if "_" in text else text
+
+
+def _feature_family(name: str) -> str:
+    n = _simplify_feature_name(name).lower()
+    if "alloc_rec" in n:
+        return "Alloc. Rec."
+    if "left_dc" in n or "dc_avail" in n or "dc_to" in n or "to_dc" in n:
+        return "DC / Left DC"
+    if "demand" in n or "d60" in n or "d30" in n or "l30" in n or "ttm" in n or "lw" in n or "velocity" in n:
+        return "Demand / velocity"
+    if "need" in n or "gap" in n or "pressure" in n or "scarcity" in n:
+        return "Need / scarcity"
+    if "supply" in n or "qoh" in n:
+        return "Supply"
+    if "review" in n or "flag" in n or "no_alloc" in n:
+        return "Flag / review"
+    if "rank" in n or "share" in n or "item_total" in n or "site_total" in n or "dept" in n or "class" in n:
+        return "Group / rank context"
+    if "retail" in n or "cost" in n or "margin" in n or "gm" in n:
+        return "Retail / margin"
+    if n in {"item", "site", "upc"}:
+        return "Categorical identity"
+    return "Other"
+
+
+def model_feature_importance(bundle: dict, top_n: int = 40) -> pd.DataFrame:
+    """Approximate feature usage from first-layer MLP weights.
+
+    This is not causal feature attribution. It is a practical, model-inspection
+    view showing which transformed inputs have the largest first-layer weight
+    magnitudes in the unit and allocation heads.
+    """
+    try:
+        pre = bundle.get("preprocessor")
+        names = list(pre.get_feature_names_out()) if hasattr(pre, "get_feature_names_out") else []
+    except Exception:
+        names = []
+
+    rows = []
+    for label, model_key in [("unit_model", "unit_model"), ("alloc_model", "alloc_model")]:
+        model = bundle.get(model_key)
+        coefs = getattr(model, "coefs_", None)
+        if not coefs:
+            continue
+        w = np.asarray(coefs[0])
+        imp = np.mean(np.abs(w), axis=1)
+        if not names or len(names) != len(imp):
+            names = [f"transformed_feature_{i}" for i in range(len(imp))]
+        for fname, val in zip(names, imp):
+            base = _simplify_feature_name(fname)
+            rows.append({
+                "model_head": label,
+                "transformed_feature": str(fname),
+                "base_feature": base,
+                "feature_family": _feature_family(base),
+                "importance": float(val),
+            })
+    if not rows:
+        return pd.DataFrame(columns=["feature_family", "base_feature", "importance"])
+    df = pd.DataFrame(rows)
+    grouped = (df.groupby(["feature_family", "base_feature"], as_index=False)["importance"]
+                 .mean()
+                 .sort_values("importance", ascending=False))
+    return grouped.head(int(top_n)).reset_index(drop=True)
+
+
+def prediction_feature_relationships(df: pd.DataFrame, audit_df: pd.DataFrame, top_n: int = 30) -> pd.DataFrame:
+    """Show which engineered numeric features move most with predicted outputs.
+
+    This is computed on the uploaded file after prediction, using correlation and
+    coverage. It helps users see which columns/signals were most related to the
+    generated allocation decisions for that run.
+    """
+    try:
+        X = build_feature_frame(df)
+    except Exception:
+        return pd.DataFrame()
+    if audit_df is None or audit_df.empty:
+        return pd.DataFrame()
+    target_prob = pd.to_numeric(audit_df.get("probability", pd.Series(0, index=audit_df.index)), errors="coerce").fillna(0)
+    target_alloc = pd.to_numeric(audit_df.get("final_alloc", pd.Series(0, index=audit_df.index)), errors="coerce").fillna(0)
+    rows = []
+    for c in [c for c in X.columns if c.startswith("num__")]:
+        s = pd.to_numeric(X[c], errors="coerce").replace([np.inf, -np.inf], np.nan)
+        coverage = float(s.notna().mean()) if len(s) else 0.0
+        if coverage <= 0 or s.nunique(dropna=True) <= 1:
+            continue
+        sf = s.fillna(s.median())
+        try:
+            corr_prob = float(np.corrcoef(sf.values, target_prob.values)[0, 1])
+        except Exception:
+            corr_prob = 0.0
+        try:
+            corr_alloc = float(np.corrcoef(sf.values, target_alloc.values)[0, 1])
+        except Exception:
+            corr_alloc = 0.0
+        if not np.isfinite(corr_prob): corr_prob = 0.0
+        if not np.isfinite(corr_alloc): corr_alloc = 0.0
+        base = c.replace("num__", "")
+        rows.append({
+            "feature": base,
+            "feature_family": _feature_family(base),
+            "coverage": coverage,
+            "corr_with_probability": corr_prob,
+            "corr_with_final_alloc": corr_alloc,
+            "relationship_strength": max(abs(corr_prob), abs(corr_alloc)),
+        })
+    if not rows:
+        return pd.DataFrame()
+    return pd.DataFrame(rows).sort_values("relationship_strength", ascending=False).head(int(top_n)).reset_index(drop=True)
 
 
 def predict_arrays(df: pd.DataFrame, bundle: dict) -> Tuple[np.ndarray, np.ndarray]:

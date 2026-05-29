@@ -157,6 +157,76 @@ def build_feature_frame(df: pd.DataFrame) -> pd.DataFrame:
     out["num__pct_rank_demand_within_item"] = out["num__rank_demand_within_item"] / np.maximum(out["num__item_row_count"], 1)
     out["num__pct_rank_alloc_rec_within_item"] = out["num__rank_alloc_rec_within_item"] / np.maximum(out["num__item_row_count"], 1)
 
+
+
+    # ------------------------------------------------------------------
+    # V4 expanded business relationships: demand momentum, price/margin,
+    # store/category pressure, and spreadsheet-vs-human decision context.
+    # These are prediction-safe because they do not use Final Alloc as an input.
+    # ------------------------------------------------------------------
+    out["num__l30_to_d60_ratio"] = l30 / np.maximum(d60, 1)
+    out["num__d30_to_d60_ratio"] = d30 / np.maximum(d60, 1)
+    out["num__lw_to_l30_ratio"] = lw / np.maximum(l30, 1)
+    out["num__proj_to_d60_ratio"] = proj / np.maximum(d60, 1)
+    out["num__proj_to_ttm_monthly_ratio"] = proj / np.maximum(ttm / 12.0, 1)
+    out["num__ttm_monthly"] = ttm / 12.0
+    out["num__ttm_60day_equiv"] = ttm / 6.0
+    out["num__recent_velocity_blend"] = (l30 + d30 + d60 / 2.0 + lw * 4.29) / 4.0
+    out["num__velocity_to_supply_ratio"] = out["num__recent_velocity_blend"] / np.maximum(supply, 1)
+    out["num__velocity_to_left_dc_ratio"] = out["num__recent_velocity_blend"] / np.maximum(left_dc, 1)
+
+    out["num__alloc_rec_to_need_ratio"] = alloc_rec / np.maximum(out["num__need_gap"], 1)
+    out["num__alloc_rec_to_demand_ratio"] = alloc_rec / np.maximum(out["num__demand_basis"], 1)
+    out["num__alloc_rec_to_left_dc_ratio"] = alloc_rec / np.maximum(left_dc, 1)
+    out["num__left_dc_minus_alloc_rec"] = left_dc - alloc_rec
+    out["num__left_dc_minus_need"] = left_dc - out["num__need_gap"]
+    out["num__demand_after_alloc_rec"] = np.maximum(0, out["num__demand_basis"] - supply - alloc_rec)
+    out["num__supply_after_alloc_rec"] = supply + alloc_rec
+    out["num__supply_after_alloc_rec_to_demand"] = out["num__supply_after_alloc_rec"] / np.maximum(out["num__demand_basis"], 1)
+
+    # Partial leftover DC: important when remaining Left DC is positive but below FLM.
+    out["num__left_dc_mod_flm"] = np.mod(np.maximum(left_dc, 0), np.maximum(flm, 1))
+    out["num__has_partial_left_dc_below_flm"] = ((left_dc > 0) & (left_dc < flm)).astype(float)
+    out["num__partial_left_dc_ratio_to_flm"] = out["num__left_dc_mod_flm"] / np.maximum(flm, 1)
+
+    # Price / margin features, when available.
+    retail = out.get("num__retail", pd.Series(0, index=out.index)).fillna(0)
+    cost = out.get("num__cost", pd.Series(0, index=out.index)).fillna(0)
+    gm_pct = out.get("num__gm_pct", pd.Series(0, index=out.index)).fillna(0)
+    out["num__unit_margin"] = retail - cost
+    out["num__margin_dollars_at_alloc_rec"] = out["num__unit_margin"] * alloc_rec
+    out["num__retail_value_at_alloc_rec"] = retail * alloc_rec
+    out["num__gm_pct_clean"] = gm_pct
+
+    # Site/store pressure features: useful for distinguishing under-served stores.
+    site = out["cat__site"].replace("", "__missing_site__")
+    out["num__site_total_demand_basis"] = out["num__demand_basis"].groupby(site).transform("sum").fillna(0)
+    out["num__site_total_need_gap"] = out["num__need_gap"].groupby(site).transform("sum").fillna(0)
+    out["num__site_total_supply"] = supply.groupby(site).transform("sum").fillna(0)
+    out["num__site_total_alloc_rec"] = alloc_rec.groupby(site).transform("sum").fillna(0)
+    out["num__share_site_demand"] = out["num__demand_basis"] / np.maximum(out["num__site_total_demand_basis"], 1)
+    out["num__share_site_need"] = out["num__need_gap"] / np.maximum(out["num__site_total_need_gap"], 1)
+    out["num__site_supply_to_demand_ratio"] = out["num__site_total_supply"] / np.maximum(out["num__site_total_demand_basis"], 1)
+
+    # Department/class-level pressure features if those numeric IDs exist.
+    dept = out["num__department_id"].fillna(-1).astype(str) if "num__department_id" in out else pd.Series("-1", index=out.index)
+    cls = out["num__class_id"].fillna(-1).astype(str) if "num__class_id" in out else pd.Series("-1", index=out.index)
+    for prefix, group_key in [("dept", dept), ("class", cls)]:
+        out[f"num__{prefix}_total_demand_basis"] = out["num__demand_basis"].groupby(group_key).transform("sum").fillna(0)
+        out[f"num__{prefix}_total_need_gap"] = out["num__need_gap"].groupby(group_key).transform("sum").fillna(0)
+        out[f"num__{prefix}_total_alloc_rec"] = alloc_rec.groupby(group_key).transform("sum").fillna(0)
+        out[f"num__share_{prefix}_need"] = out["num__need_gap"] / np.maximum(out[f"num__{prefix}_total_need_gap"], 1)
+        out[f"num__share_{prefix}_alloc_rec"] = alloc_rec / np.maximum(out[f"num__{prefix}_total_alloc_rec"], 1)
+
+    # Decision-rule boundary signals from helper/check columns when present.
+    demand_check = out.get("num__demand_check", pd.Series(0, index=out.index)).fillna(0)
+    helper = out.get("num__helper", pd.Series(0, index=out.index)).fillna(0)
+    out["num__demand_check_abs"] = demand_check.abs()
+    out["num__helper_abs"] = helper.abs()
+    out["num__helper_to_flm_ratio"] = helper / np.maximum(flm, 1)
+    out["num__demand_check_to_flm_ratio"] = demand_check / np.maximum(flm, 1)
+
+
     # Clean numeric infinities.
     num_cols = [c for c in out.columns if c.startswith("num__")]
     out[num_cols] = out[num_cols].replace([np.inf, -np.inf], np.nan)
@@ -208,5 +278,22 @@ def build_targets(df: pd.DataFrame, max_units: int = 80) -> pd.DataFrame:
     y["__target_review_pass1"] = ((is_review > 0) & (units > 0)).astype(int)
     y["__target_review_pass2"] = ((is_review > 0) & (units > 1) & ((alloc_rec_units >= 1) | (need_units >= 1))).astype(int)
     y["__target_review_pass3"] = ((is_review > 0) & (units > 2) & ((alloc_rec_units >= 2) | (need_units >= 2))).astype(int)
+
+    # Additional high-signal auxiliary targets. These teach the shared neural
+    # representation when to override workbook flags/recommendations and when
+    # inventory is scarce. They do not cap the final allocation; they only add
+    # useful supervised signals during training.
+    is_no_alloc = feat["num__is_no_alloc_flag"].fillna(0).astype(int)
+    rounded_alloc_rec_units = np.rint(alloc_rec_units).fillna(0).astype(int)
+    y["__target_no_alloc_override"] = ((is_no_alloc > 0) & (units > 0)).astype(int)
+    y["__target_alloc_rec_override"] = (
+        (units > 0) & (np.abs(units - rounded_alloc_rec_units) >= 1)
+    ).astype(int)
+    scarcity_pressure = (
+        (feat.get("num__item_need_to_dc_ratio", pd.Series(0, index=df.index)).fillna(0) > 1.0)
+        | (feat.get("num__item_alloc_rec_to_dc_ratio", pd.Series(0, index=df.index)).fillna(0) > 1.0)
+        | (feat.get("num__item_supply_gap_pressure", pd.Series(0, index=df.index)).fillna(0) > 1.0)
+    )
+    y["__target_scarcity_sensitive"] = (scarcity_pressure & (units > 0)).astype(int)
     return y
 
