@@ -68,6 +68,22 @@ st.set_page_config(page_title="Allocation AI Predictor", page_icon="🎯", layou
 
 APP_TITLE = "🎯 Allocation AI Predictor"
 BASE_MODEL_LABEL = "Base NN Model"
+BASE_TRANSFER_LABEL = "Base Transfer Model"
+BUILTIN_MODELS = {
+    BASE_MODEL_LABEL: {
+        "model_path": Path("allocation_ai_base_sklearn_mlp.joblib"),
+        "metadata_path": Path("allocation_ai_metadata.json"),
+        "threshold_sweep_path": Path("allocation_ai_threshold_sweep.csv"),
+        "description": "Original included neural/allocation model."
+    },
+    BASE_TRANSFER_LABEL: {
+        "model_path": Path("allocation_ai_base_transfer_model.joblib"),
+        "metadata_path": Path("transfer_model_metadata.json"),
+        "threshold_sweep_path": Path("transfer_model_threshold_sweep.csv"),
+        "training_log_path": Path("transfer_model_training_log.csv"),
+        "description": "Sequential transfer-trained Streamlit-compatible MLP model."
+    },
+}
 
 
 def _safe_json_from_zip(uploaded_file: Any) -> dict:
@@ -83,6 +99,8 @@ def _safe_json_from_zip(uploaded_file: Any) -> dict:
             def score(n: str) -> tuple[int, str]:
                 low = n.lower()
                 s = 0
+                if "transfer_model" in low or "transfer" in low:
+                    s += 450
                 if "camp" in low:
                     s += 400
                 if "app_compatible" in low:
@@ -173,8 +191,10 @@ def _load_baseline_metrics() -> dict:
         return {}
 
 
-included_meta = read_metadata()
+included_meta = read_metadata(BUILTIN_MODELS[BASE_MODEL_LABEL]["metadata_path"])
+transfer_meta = read_metadata(BUILTIN_MODELS[BASE_TRANSFER_LABEL]["metadata_path"])
 included_summary = _metadata_summary(included_meta)
+transfer_summary = _metadata_summary(transfer_meta)
 baseline_metrics = _load_baseline_metrics()
 
 # Sidebar model + prediction settings.
@@ -186,21 +206,26 @@ with st.sidebar:
         accept_multiple_files=True,
         help=(
             "Optional: upload one or more trained artifact zips or app-compatible .joblib/.pkl bundles. "
-            "The included model is your latest trained Base NN Model."
+            "The app includes Base NN Model and Base Transfer Model, and you can add more model artifacts here."
         ),
     )
 
-    model_labels = [BASE_MODEL_LABEL]
+    model_labels = list(BUILTIN_MODELS.keys())
     if uploaded_models:
         model_labels.extend([f"Uploaded: {m.name}" for m in uploaded_models])
 
     selected_label = st.selectbox("Choose model for prediction", model_labels, index=0)
     selected_uploaded_model = None
+    selected_builtin = selected_label if selected_label in BUILTIN_MODELS else None
     if selected_label.startswith("Uploaded:") and uploaded_models:
-        selected_idx = model_labels.index(selected_label) - 1
+        selected_idx = model_labels.index(selected_label) - len(BUILTIN_MODELS)
         selected_uploaded_model = uploaded_models[selected_idx]
 
-    selected_preview_meta = included_meta
+    if selected_builtin:
+        selected_preview_meta = read_metadata(BUILTIN_MODELS[selected_builtin]["metadata_path"])
+    else:
+        selected_preview_meta = included_meta
+
     if selected_uploaded_model is not None:
         selected_preview_meta = _safe_json_from_zip(selected_uploaded_model)
         if not selected_preview_meta:
@@ -246,7 +271,7 @@ with st.sidebar:
     )
 
 st.title(APP_TITLE)
-st.caption("Prediction-only app · Base NN Model included · multi-model selector · completed CSV + audit + AI insights")
+st.caption("Prediction-only app · Base NN Model + Base Transfer Model included · multi-model selector · completed CSV + audit + AI insights")
 if _PREDICTOR_IMPORT_ERROR is not None:
     st.error("The prediction engine did not import correctly. This usually means the GitHub repo has mismatched files from different app versions.")
     st.exception(_PREDICTOR_IMPORT_ERROR)
@@ -292,7 +317,12 @@ with predict_tab:
                     review_pass3_min_probability=float(review_pass3_prob),
                 )
                 with st.spinner("Loading selected model and running sequential allocation simulation..."):
-                    bundle = load_model_bundle(selected_uploaded_model)
+                    bundle = load_model_bundle(
+                        selected_uploaded_model,
+                        default_path=BUILTIN_MODELS.get(selected_label, BUILTIN_MODELS[BASE_MODEL_LABEL])["model_path"],
+                        default_metadata_path=BUILTIN_MODELS.get(selected_label, BUILTIN_MODELS[BASE_MODEL_LABEL])["metadata_path"],
+                        model_label=selected_label,
+                    )
                     out_df, audit_df, summary = predict_to_outputs(df, bundle, cfg)
 
                 artifact_meta = bundle.get("__artifact_metadata", {}) if isinstance(bundle, dict) else {}
@@ -481,7 +511,7 @@ with process_tab:
         The Camp trainer builds a neural allocation model with integer FLM-unit targets, allocation probability, Review behavior, `Z - No Alloc.` override learning, scarcity learning, ordinal unit loss, focal allocation loss, OneCycle learning-rate scheduling, and start/stop/resume checkpoints.
 
         **4. Streamlit export**  
-        The Jupyter trainer exports one app-compatible model bundle. This app loads that bundle as the included **Base NN Model**, and can also accept additional model artifact zips from future training runs.
+        The Jupyter trainer exports one app-compatible model bundle. This app includes both the original **Base NN Model** and the sequentially trained **Base Transfer Model**. It can also accept additional model artifact zips from future training runs.
 
         **5. Prediction**  
         The selected model predicts integer FLM units and allocation probability for each row. Predictions are then passed through the allocation simulator.
@@ -500,53 +530,66 @@ with process_tab:
         {"Behavior": "Partial leftover DC", "Description": "If Left DC is positive but below one FLM, the app can allocate the remaining units."},
         {"Behavior": "Three Review passes", "Description": "Review rows can be revisited up to three times after the main pass."},
         {"Behavior": "Z - No Alloc override", "Description": "No Alloc rows can receive allocation only when model/demand signals justify it."},
-        {"Behavior": "Model selector", "Description": "Use the included Base NN Model or upload additional trained models."},
+        {"Behavior": "Model selector", "Description": "Use Base NN Model, Base Transfer Model, or upload additional trained models."},
     ])
     st.dataframe(behavior, use_container_width=True, hide_index=True)
 
 with model_tab:
-    st.markdown("## Base NN Model metrics")
-    st.caption("This page describes the included model that appears as **Base NN Model** in the selector.")
-    if included_meta:
+    st.markdown("## Included model metrics")
+    st.caption("This page describes the built-in models available in the AI selector dropdown.")
+
+    def _show_model_card(label: str, meta: dict, summary: dict, sweep_file: Path | None = None, training_log_file: Path | None = None):
+        st.markdown(f"### {label}")
+        if not meta:
+            st.info(f"No metadata found for {label}.")
+            return
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Rows total", f"{int(included_summary.get('rows_total') or 0):,}")
-        c2.metric("Training rows", f"{int(included_summary.get('rows_train') or 0):,}" if included_summary.get("rows_train") else "—")
-        c3.metric("Validation rows", f"{int(included_summary.get('rows_validation') or 0):,}" if included_summary.get("rows_validation") else "—")
-        c4.metric("Positive rows", f"{int(included_summary.get('positive_rows_total') or 0):,}" if included_summary.get("positive_rows_total") else "—")
+        c1.metric("Rows total", f"{int(summary.get('rows_total') or 0):,}")
+        c2.metric("Training rows", f"{int(summary.get('rows_train') or 0):,}" if summary.get("rows_train") else "—")
+        c3.metric("Validation rows", f"{int(summary.get('rows_validation') or 0):,}" if summary.get("rows_validation") else "—")
+        c4.metric("Positive rows", f"{int(summary.get('positive_rows_total') or 0):,}" if summary.get("positive_rows_total") else "—")
 
         b1, b2, b3, b4, b5 = st.columns(5)
-        b1.metric("Best threshold", f"{included_summary.get('threshold', 0):.2f}")
-        b2.metric("F1", _fmt_num(included_summary.get("f1")))
-        b3.metric("Precision", _fmt_num(included_summary.get("precision")))
-        b4.metric("Recall", _fmt_num(included_summary.get("recall")))
-        b5.metric("Unit MAE", _fmt_num(included_summary.get("unit_mae"), 4))
+        b1.metric("Best threshold", f"{summary.get('threshold', 0):.2f}")
+        b2.metric("F1", _fmt_num(summary.get("f1")))
+        b3.metric("Precision", _fmt_num(summary.get("precision")))
+        b4.metric("Recall", _fmt_num(summary.get("recall")))
+        b5.metric("Unit MAE", _fmt_num(summary.get("unit_mae"), 4))
 
-        st.markdown("### Streamlit reload smoke test")
-        st.caption("This is the validation sample used to confirm the exported app-compatible model reloads and predicts correctly.")
-        s1, s2, s3, s4 = st.columns(4)
-        s1.metric("Smoke F1", _fmt_num(included_summary.get("smoke_test_f1")))
-        s2.metric("Smoke precision", _fmt_num(included_summary.get("smoke_test_precision")))
-        s3.metric("Smoke recall", _fmt_num(included_summary.get("smoke_test_recall")))
-        s4.metric("Smoke unit accuracy", _fmt_num(included_summary.get("smoke_test_unit_accuracy")))
+        if any(summary.get(k) is not None for k in ["smoke_test_f1", "smoke_test_precision", "smoke_test_recall", "smoke_test_unit_accuracy"]):
+            st.markdown("#### Streamlit reload smoke test")
+            s1, s2, s3, s4 = st.columns(4)
+            s1.metric("Smoke F1", _fmt_num(summary.get("smoke_test_f1")))
+            s2.metric("Smoke precision", _fmt_num(summary.get("smoke_test_precision")))
+            s3.metric("Smoke recall", _fmt_num(summary.get("smoke_test_recall")))
+            s4.metric("Smoke unit accuracy", _fmt_num(summary.get("smoke_test_unit_accuracy")))
 
-        with st.expander("Full Base NN Model metadata", expanded=False):
-            st.json(included_meta)
-    else:
-        st.info("No Base NN Model metadata found.")
+        with st.expander(f"Full {label} metadata", expanded=False):
+            st.json(meta)
 
-    sweep_path = Path("allocation_ai_threshold_sweep.csv")
-    if sweep_path.exists():
-        st.markdown("### Threshold sweep")
-        try:
-            sweep = pd.read_csv(sweep_path)
-            st.dataframe(sweep, use_container_width=True, height=360)
-            if "threshold" in sweep.columns and "f1" in sweep.columns:
-                st.line_chart(sweep.set_index("threshold")[["f1", "precision", "recall"]])
-        except Exception as exc:
-            st.caption(f"Could not read threshold sweep: {exc}")
+        if sweep_file and sweep_file.exists():
+            st.markdown("#### Threshold sweep")
+            try:
+                sweep = pd.read_csv(sweep_file)
+                st.dataframe(sweep, use_container_width=True, height=300)
+                if {"threshold", "f1", "precision", "recall"}.issubset(sweep.columns):
+                    st.line_chart(sweep.set_index("threshold")[["f1", "precision", "recall"]])
+            except Exception as exc:
+                st.caption(f"Could not read threshold sweep: {exc}")
+
+        if training_log_file and training_log_file.exists():
+            st.markdown("#### Sequential transfer training log")
+            try:
+                log = pd.read_csv(training_log_file)
+                st.dataframe(log.tail(30), use_container_width=True, height=320)
+            except Exception as exc:
+                st.caption(f"Could not read training log: {exc}")
+
+    _show_model_card(BASE_MODEL_LABEL, included_meta, included_summary, BUILTIN_MODELS[BASE_MODEL_LABEL].get("threshold_sweep_path"))
+    st.divider()
+    _show_model_card(BASE_TRANSFER_LABEL, transfer_meta, transfer_summary, BUILTIN_MODELS[BASE_TRANSFER_LABEL].get("threshold_sweep_path"), BUILTIN_MODELS[BASE_TRANSFER_LABEL].get("training_log_path"))
 
     if baseline_metrics:
         st.markdown("### Alloc. Rec. baseline")
         st.caption("Reference comparison against workbook allocation recommendation logic, when exported by the trainer.")
         st.json(baseline_metrics)
-

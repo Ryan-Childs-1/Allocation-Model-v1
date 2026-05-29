@@ -1,35 +1,61 @@
-# Allocation AI Predictor
+# Allocation AI Streamlit Predictor
 
-Prediction-only Streamlit app for Allocation AI.
+This is a flat, Streamlit-ready prediction app for Allocation AI.
 
-## Entry point
+## Built-in models
 
-Use `app.py` as the Streamlit entry point.
+The AI selector includes two built-in models:
 
-## Included model
+1. **Base NN Model** — the prior included neural/allocation model.
+2. **Base Transfer Model** — the sequential transfer-trained Streamlit-compatible MLP model exported as `transfer_model`.
 
-The included default model appears in the app as **Base NN Model** and is stored as:
+You can also upload additional `.zip`, `.joblib`, or `.pkl` model artifacts and choose between all available models in the sidebar.
 
-- `allocation_ai_base_sklearn_mlp.joblib`
-- `allocation_ai_metadata.json`
-- `allocation_ai_threshold_sweep.csv`
+## Inputs
 
-## Supported prediction files
+The app accepts allocation files in:
 
 - `.xlsb`
 - `.xlsx`
 - `.csv`
 
+It preserves row order and writes predictions into the detected Final Alloc column in the downloadable CSV output.
+
 ## Outputs
 
-The app returns:
+After prediction, the app provides:
 
 - `completed_allocation.csv`
 - `allocation_audit.csv`
 - `prediction_summary.json`
 - `model_feature_importance.csv`
 - `prediction_feature_relationships.csv`
+- a combined output ZIP
 
-## Notes
+## Model behavior
 
-This version fixes a deployment ImportError by importing `predictor.py` safely as a module and surfacing any file mismatch inside the Streamlit UI. It also lazily imports `pyxlsb`, so the app itself can load even if `.xlsb` support has an environment problem.
+The simulator supports:
+
+- integer Final Alloc output or blank
+- three-pass Review logic
+- no max-FLM-per-pass cap
+- `Z - No Alloc.` override when justified
+- partial remaining Left DC below one FLM
+- sequential Left DC updates by item
+
+## Deploying to Streamlit
+
+Upload all files in this flat folder to GitHub and deploy `app.py` as the Streamlit entry point.
+
+
+## File-size note
+
+The built-in **Base Transfer Model** is stored as split files:
+
+```text
+allocation_ai_base_transfer_model.joblib.part01
+allocation_ai_base_transfer_model.joblib.part02
+allocation_ai_base_transfer_model.joblib.part03
+```
+
+This keeps every repository file below 25 MB for GitHub/Streamlit upload limits. The app reconstructs the model in memory automatically at runtime. Do not rename or delete these `.partXX` files.

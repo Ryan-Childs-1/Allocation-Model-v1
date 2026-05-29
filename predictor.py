@@ -18,6 +18,8 @@ from schema import build_column_map
 
 DEFAULT_MODEL_PATH = Path("allocation_ai_base_sklearn_mlp.joblib")
 DEFAULT_METADATA_PATH = Path("allocation_ai_metadata.json")
+DEFAULT_TRANSFER_MODEL_PATH = Path("allocation_ai_base_transfer_model.joblib")
+DEFAULT_TRANSFER_METADATA_PATH = Path("transfer_model_metadata.json")
 
 
 # -----------------------------------------------------------------------------
@@ -186,6 +188,45 @@ def _repair_sklearn_pickle_compat(bundle: dict) -> dict:
     bundle["__compat_repairs"] = list(dict.fromkeys(list(existing) + repairs))
     return bundle
 
+
+
+def _joblib_part_paths(path: str | Path) -> list[Path]:
+    """Return ordered split-part paths for a model stored as file.joblib.part01, part02, ...
+
+    This keeps each repository file below hosting limits while allowing the app
+    to reconstruct the built-in model in memory at runtime.
+    """
+    p = Path(path)
+    parent = p.parent if str(p.parent) != "." else Path(".")
+    parts = sorted(parent.glob(p.name + ".part*"))
+    return [x for x in parts if x.is_file()]
+
+
+def _load_joblib_with_split_support(path: str | Path):
+    """Load a joblib bundle from either a normal file or split .partXX files."""
+    p = Path(path)
+    if p.exists():
+        return joblib.load(p)
+    parts = _joblib_part_paths(p)
+    if parts:
+        import io
+        data = b"".join(part.read_bytes() for part in parts)
+        return joblib.load(io.BytesIO(data))
+    raise FileNotFoundError(
+        f"Model file was not found: {p}. Also looked for split parts like {p.name}.part01."
+    )
+
+
+def _model_storage_note(path: str | Path) -> str:
+    p = Path(path)
+    if p.exists():
+        return str(p)
+    parts = _joblib_part_paths(p)
+    if parts:
+        total_mb = sum(x.stat().st_size for x in parts) / (1024 * 1024)
+        return f"{p.name} split into {len(parts)} parts ({total_mb:.1f} MB total)"
+    return str(p)
+
 def read_metadata(path: str | Path = DEFAULT_METADATA_PATH) -> dict:
     p = Path(path)
     if not p.exists():
@@ -223,6 +264,8 @@ def _pick_model_from_artifact_dir(root: Path) -> Path:
         if "dataset" in name or "training_data" in name or "progress" in name:
             penalty -= 100
         s = 0
+        if "transfer_model" in name or "transfer" in name:
+            s += 1100
         if "app_compatible" in name:
             s += 1000
         if "camp" in name:
@@ -264,7 +307,7 @@ def _find_metadata_in_artifact_dir(root: Path) -> dict:
     return metadata
 
 
-def load_model_bundle(model_file: Any | None = None, default_path: str | Path = DEFAULT_MODEL_PATH) -> dict:
+def load_model_bundle(model_file: Any | None = None, default_path: str | Path = DEFAULT_MODEL_PATH, default_metadata_path: str | Path = DEFAULT_METADATA_PATH, model_label: str = "Base NN Model") -> dict:
     """Load a prediction bundle from an upload or the included base model.
 
     Accepted upload types:
@@ -279,7 +322,7 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
       - alloc_model
     """
     artifact_metadata: dict = {}
-    artifact_model_name = "Base NN Model"
+    artifact_model_name = str(model_label or "Base NN Model")
 
     if model_file is not None:
         upload_name = getattr(model_file, "name", "uploaded_model")
@@ -297,18 +340,18 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
                 model_path = _pick_model_from_artifact_dir(extract_dir)
                 artifact_metadata = _find_metadata_in_artifact_dir(extract_dir)
                 artifact_model_name = model_path.name
-                bundle = joblib.load(model_path)
+                bundle = _load_joblib_with_split_support(model_path)
                 bundle = _repair_sklearn_pickle_compat(bundle)
             elif suffix in {".joblib", ".pkl"}:
                 artifact_model_name = upload_name
-                bundle = joblib.load(upload_path)
+                bundle = _load_joblib_with_split_support(upload_path)
                 bundle = _repair_sklearn_pickle_compat(bundle)
             else:
                 raise ValueError("Unsupported model upload. Please upload .zip, .joblib, or .pkl.")
     else:
-        bundle = joblib.load(Path(default_path))
+        bundle = _load_joblib_with_split_support(Path(default_path))
         bundle = _repair_sklearn_pickle_compat(bundle)
-        artifact_metadata = read_metadata()
+        artifact_metadata = read_metadata(default_metadata_path)
 
     required = {"preprocessor", "feature_columns", "unit_model", "alloc_model"}
     missing = required.difference(bundle.keys()) if isinstance(bundle, dict) else required
@@ -322,6 +365,10 @@ def load_model_bundle(model_file: Any | None = None, default_path: str | Path = 
     # Attach non-model info for the UI and threshold defaults without affecting prediction.
     bundle["__artifact_metadata"] = artifact_metadata
     bundle["__artifact_model_name"] = artifact_model_name
+    if model_file is None:
+        bundle["__model_storage_note"] = _model_storage_note(default_path)
+    else:
+        bundle["__model_storage_note"] = artifact_model_name
     return bundle
 
 
