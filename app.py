@@ -102,6 +102,7 @@ BUILTIN_MODELS = {
         "threshold_sweep_path": Path("base_camp_model_threshold_sweep.csv"),
         "training_log_path": Path("base_camp_model_training_log.csv"),
         "training_progress_path": Path("base_camp_model_training_progress.csv"),
+        "local_smoke_test_path": Path("base_camp_model_local_smoke_test.json"),
         "description": "Production Camp MLP model trained with live-progress sklearn path."
     },
 }
@@ -170,7 +171,11 @@ def _metadata_best_threshold(meta: dict, fallback: float = 0.05) -> float:
 
 def _metadata_summary(meta: dict) -> dict:
     best = meta.get("best_validation_metrics", {}) if isinstance(meta.get("best_validation_metrics", {}), dict) else {}
-    smoke = meta.get("streamlit_reload_smoke_test", {}) if isinstance(meta.get("streamlit_reload_smoke_test", {}), dict) else {}
+    trainer_smoke = meta.get("streamlit_reload_smoke_test", {}) if isinstance(meta.get("streamlit_reload_smoke_test", {}), dict) else {}
+    local_smoke = meta.get("local_streamlit_smoke_test", {}) if isinstance(meta.get("local_streamlit_smoke_test", {}), dict) else {}
+    # Prefer the local app-bundle smoke test for display when it exists, because it
+    # confirms the exact shipped Streamlit model can be loaded and scored.
+    smoke = local_smoke or trainer_smoke
     return {
         "backend": meta.get("backend", "unknown"),
         "artifact_short_name": meta.get("artifact_short_name", ""),
@@ -186,10 +191,19 @@ def _metadata_summary(meta: dict) -> dict:
         "positive_unit_accuracy": best.get("positive_unit_accuracy", None),
         "unit_mae": best.get("unit_mae", None),
         "false_positive_rate": best.get("false_positive_rate", None),
+        "smoke_test_status": smoke.get("status", "computed" if smoke else None),
+        "smoke_test_source_file": smoke.get("source_file", None),
+        "smoke_test_rows_scored": smoke.get("rows_scored", None),
+        "smoke_test_threshold": smoke.get("threshold", None),
         "smoke_test_f1": smoke.get("f1", None),
         "smoke_test_precision": smoke.get("precision", None),
         "smoke_test_recall": smoke.get("recall", None),
         "smoke_test_unit_accuracy": smoke.get("unit_accuracy", None),
+        "smoke_test_positive_unit_accuracy": smoke.get("positive_unit_accuracy", None),
+        "smoke_test_unit_mae": smoke.get("unit_mae", None),
+        "smoke_test_false_positive_rate": smoke.get("false_positive_rate", None),
+        "smoke_test_predicted_positive_rows": smoke.get("predicted_positive_rows", None),
+        "smoke_test_actual_positive_rows": smoke.get("actual_positive_rows", None),
     }
 
 
@@ -212,7 +226,41 @@ def _load_baseline_metrics() -> dict:
         return {}
 
 
-builtin_metadata = {label: read_metadata(info.get("metadata_path", Path(""))) for label, info in BUILTIN_MODELS.items()}
+def _load_json_if_exists(path: str | Path) -> dict:
+    p = Path(path)
+    if not p.exists():
+        return {}
+    try:
+        obj = json.loads(p.read_text(encoding="utf-8"))
+        return obj if isinstance(obj, dict) else {}
+    except Exception:
+        return {}
+
+
+def _merge_model_metadata(meta: dict, info: dict) -> dict:
+    """Attach sidecar smoke-test/metric JSON files to a model metadata dictionary.
+
+    Older app versions only displayed the top-level metadata JSON.  The Base Camp
+    model now also ships a local smoke-test JSON computed after loading the exact
+    Streamlit bundle, so this function guarantees the Model Metrics page can show
+    those values even if the nested metadata shape changes.
+    """
+    merged = dict(meta or {})
+    smoke_path = info.get("local_smoke_test_path")
+    smoke = _load_json_if_exists(smoke_path) if smoke_path else {}
+    if smoke:
+        merged["local_streamlit_smoke_test"] = smoke
+        # Preserve the trainer-provided smoke test, but also expose the local smoke
+        # test as the display fallback because it is computed from this exact app bundle.
+        if not isinstance(merged.get("streamlit_reload_smoke_test"), dict):
+            merged["streamlit_reload_smoke_test"] = smoke
+    return merged
+
+
+builtin_metadata = {
+    label: _merge_model_metadata(read_metadata(info.get("metadata_path", Path(""))), info)
+    for label, info in BUILTIN_MODELS.items()
+}
 builtin_summaries = {label: _metadata_summary(meta) for label, meta in builtin_metadata.items()}
 included_meta = builtin_metadata.get(BASE_MODEL_LABEL, {})
 included_summary = builtin_summaries.get(BASE_MODEL_LABEL, _metadata_summary({}))
@@ -227,7 +275,7 @@ with st.sidebar:
         accept_multiple_files=True,
         help=(
             "Optional: upload one or more trained artifact zips or app-compatible .joblib/.pkl bundles. "
-            "The app includes Base NN Model, and you can add more model artifacts here."
+            "The app includes Base NN Model and Base Camp Model, and you can add more model artifacts here."
         ),
     )
 
@@ -551,13 +599,13 @@ with process_tab:
         {"Behavior": "Partial leftover DC", "Description": "If Left DC is positive but below one FLM, the app can allocate the remaining units."},
         {"Behavior": "Three Review passes", "Description": "Review rows can be revisited up to three times after the main pass."},
         {"Behavior": "Z - No Alloc override", "Description": "No Alloc rows can receive allocation only when model/demand signals justify it."},
-        {"Behavior": "Model selector", "Description": "Use Base NN Model or upload additional trained models."},
+        {"Behavior": "Model selector", "Description": "Use Base NN Model, Base Camp Model, or upload additional trained models."},
     ])
     st.dataframe(behavior, use_container_width=True, hide_index=True)
 
 with model_tab:
     st.markdown("## Included model metrics")
-    st.caption("This page describes the built-in model available in the AI selector dropdown.")
+    st.caption("This page describes the built-in models available in the AI selector dropdown, including validation metrics and local Streamlit reload smoke tests.")
 
     def _show_model_card(label: str, meta: dict, summary: dict, sweep_file: Path | None = None, training_log_file: Path | None = None):
         st.markdown(f"### {label}")
@@ -577,13 +625,28 @@ with model_tab:
         b4.metric("Recall", _fmt_num(summary.get("recall")))
         b5.metric("Unit MAE", _fmt_num(summary.get("unit_mae"), 4))
 
-        if any(summary.get(k) is not None for k in ["smoke_test_f1", "smoke_test_precision", "smoke_test_recall", "smoke_test_unit_accuracy"]):
-            st.markdown("#### Streamlit reload smoke test")
-            s1, s2, s3, s4 = st.columns(4)
-            s1.metric("Smoke F1", _fmt_num(summary.get("smoke_test_f1")))
-            s2.metric("Smoke precision", _fmt_num(summary.get("smoke_test_precision")))
-            s3.metric("Smoke recall", _fmt_num(summary.get("smoke_test_recall")))
-            s4.metric("Smoke unit accuracy", _fmt_num(summary.get("smoke_test_unit_accuracy")))
+        if any(summary.get(k) is not None for k in ["smoke_test_f1", "smoke_test_precision", "smoke_test_recall", "smoke_test_unit_accuracy", "smoke_test_status"]):
+            st.markdown("#### Streamlit reload / local smoke test")
+            smoke_note = []
+            if summary.get("smoke_test_status"):
+                smoke_note.append(f"status: `{summary.get('smoke_test_status')}`")
+            if summary.get("smoke_test_source_file"):
+                smoke_note.append(f"source file: `{summary.get('smoke_test_source_file')}`")
+            if summary.get("smoke_test_rows_scored"):
+                smoke_note.append(f"rows scored: `{int(summary.get('smoke_test_rows_scored')):,}`")
+            if smoke_note:
+                st.caption(" · ".join(smoke_note))
+            s1, s2, s3, s4, s5 = st.columns(5)
+            s1.metric("Smoke threshold", _fmt_num(summary.get("smoke_test_threshold"), 2))
+            s2.metric("Smoke F1", _fmt_num(summary.get("smoke_test_f1")))
+            s3.metric("Smoke precision", _fmt_num(summary.get("smoke_test_precision")))
+            s4.metric("Smoke recall", _fmt_num(summary.get("smoke_test_recall")))
+            s5.metric("Smoke unit accuracy", _fmt_num(summary.get("smoke_test_unit_accuracy")))
+            s6, s7, s8, s9 = st.columns(4)
+            s6.metric("Smoke positive unit accuracy", _fmt_num(summary.get("smoke_test_positive_unit_accuracy")))
+            s7.metric("Smoke unit MAE", _fmt_num(summary.get("smoke_test_unit_mae"), 4))
+            s8.metric("Smoke false positive rate", _fmt_num(summary.get("smoke_test_false_positive_rate"), 4))
+            s9.metric("Smoke predicted / actual positives", f"{int(summary.get('smoke_test_predicted_positive_rows') or 0):,} / {int(summary.get('smoke_test_actual_positive_rows') or 0):,}")
 
         with st.expander(f"Full {label} metadata", expanded=False):
             st.json(meta)
@@ -599,10 +662,13 @@ with model_tab:
                 st.caption(f"Could not read threshold sweep: {exc}")
 
         if training_log_file and training_log_file.exists():
-            st.markdown("#### Sequential transfer training log")
+            st.markdown("#### Training log / progress")
             try:
                 log = pd.read_csv(training_log_file)
                 st.dataframe(log.tail(30), use_container_width=True, height=320)
+                chart_cols = [c for c in ["val_f1", "val_precision", "val_recall"] if c in log.columns]
+                if "epoch" in log.columns and chart_cols:
+                    st.line_chart(log.set_index("epoch")[chart_cols])
             except Exception as exc:
                 st.caption(f"Could not read training log: {exc}")
 
