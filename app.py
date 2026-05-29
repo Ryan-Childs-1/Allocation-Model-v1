@@ -88,20 +88,12 @@ st.set_page_config(page_title="Allocation AI Predictor", page_icon="🎯", layou
 
 APP_TITLE = "🎯 Allocation AI Predictor"
 BASE_MODEL_LABEL = "Base NN Model"
-BASE_TRANSFER_LABEL = "Base Transfer Model"
 BUILTIN_MODELS = {
     BASE_MODEL_LABEL: {
         "model_path": Path("allocation_ai_base_sklearn_mlp.joblib"),
         "metadata_path": Path("allocation_ai_metadata.json"),
         "threshold_sweep_path": Path("allocation_ai_threshold_sweep.csv"),
-        "description": "Original included neural/allocation model."
-    },
-    BASE_TRANSFER_LABEL: {
-        "model_path": Path("allocation_ai_base_transfer_model.joblib"),
-        "metadata_path": Path("transfer_model_metadata.json"),
-        "threshold_sweep_path": Path("transfer_model_threshold_sweep.csv"),
-        "training_log_path": Path("transfer_model_training_log.csv"),
-        "description": "Sequential transfer-trained Streamlit-compatible MLP model."
+        "description": "Included neural/allocation model."
     },
 }
 
@@ -212,9 +204,7 @@ def _load_baseline_metrics() -> dict:
 
 
 included_meta = read_metadata(BUILTIN_MODELS[BASE_MODEL_LABEL]["metadata_path"])
-transfer_meta = read_metadata(BUILTIN_MODELS[BASE_TRANSFER_LABEL]["metadata_path"])
 included_summary = _metadata_summary(included_meta)
-transfer_summary = _metadata_summary(transfer_meta)
 baseline_metrics = _load_baseline_metrics()
 
 # Sidebar model + prediction settings.
@@ -226,7 +216,7 @@ with st.sidebar:
         accept_multiple_files=True,
         help=(
             "Optional: upload one or more trained artifact zips or app-compatible .joblib/.pkl bundles. "
-            "The app includes Base NN Model and Base Transfer Model, and you can add more model artifacts here."
+            "The app includes Base NN Model, and you can add more model artifacts here."
         ),
     )
 
@@ -291,7 +281,7 @@ with st.sidebar:
     )
 
 st.title(APP_TITLE)
-st.caption("Prediction-only app · Base NN Model + Base Transfer Model included · multi-model selector · completed CSV + audit + AI insights")
+st.caption("Prediction-only app · Base NN Model included · multi-model selector · completed CSV + audit + AI insights")
 if _PREDICTOR_IMPORT_ERROR is not None:
     st.error("The prediction engine did not import correctly. This usually means the GitHub repo has mismatched files from different app versions.")
     st.exception(_PREDICTOR_IMPORT_ERROR)
@@ -531,7 +521,7 @@ with process_tab:
         The Camp trainer builds a neural allocation model with integer FLM-unit targets, allocation probability, Review behavior, `Z - No Alloc.` override learning, scarcity learning, ordinal unit loss, focal allocation loss, OneCycle learning-rate scheduling, and start/stop/resume checkpoints.
 
         **4. Streamlit export**  
-        The Jupyter trainer exports one app-compatible model bundle. This app includes both the original **Base NN Model** and the sequentially trained **Base Transfer Model**. It can also accept additional model artifact zips from future training runs.
+        The Jupyter trainer exports one app-compatible model bundle. This app includes the **Base NN Model** and can also accept additional model artifact zips from future training runs.
 
         **5. Prediction**  
         The selected model predicts integer FLM units and allocation probability for each row. Predictions are then passed through the allocation simulator.
@@ -550,13 +540,13 @@ with process_tab:
         {"Behavior": "Partial leftover DC", "Description": "If Left DC is positive but below one FLM, the app can allocate the remaining units."},
         {"Behavior": "Three Review passes", "Description": "Review rows can be revisited up to three times after the main pass."},
         {"Behavior": "Z - No Alloc override", "Description": "No Alloc rows can receive allocation only when model/demand signals justify it."},
-        {"Behavior": "Model selector", "Description": "Use Base NN Model, Base Transfer Model, or upload additional trained models."},
+        {"Behavior": "Model selector", "Description": "Use Base NN Model or upload additional trained models."},
     ])
     st.dataframe(behavior, use_container_width=True, hide_index=True)
 
 with model_tab:
     st.markdown("## Included model metrics")
-    st.caption("This page describes the built-in models available in the AI selector dropdown.")
+    st.caption("This page describes the built-in model available in the AI selector dropdown.")
 
     def _show_model_card(label: str, meta: dict, summary: dict, sweep_file: Path | None = None, training_log_file: Path | None = None):
         st.markdown(f"### {label}")
@@ -606,8 +596,6 @@ with model_tab:
                 st.caption(f"Could not read training log: {exc}")
 
     _show_model_card(BASE_MODEL_LABEL, included_meta, included_summary, BUILTIN_MODELS[BASE_MODEL_LABEL].get("threshold_sweep_path"))
-    st.divider()
-    _show_model_card(BASE_TRANSFER_LABEL, transfer_meta, transfer_summary, BUILTIN_MODELS[BASE_TRANSFER_LABEL].get("threshold_sweep_path"), BUILTIN_MODELS[BASE_TRANSFER_LABEL].get("training_log_path"))
 
     if baseline_metrics:
         st.markdown("### Alloc. Rec. baseline")

@@ -18,8 +18,6 @@ from schema import build_column_map
 
 DEFAULT_MODEL_PATH = Path("allocation_ai_base_sklearn_mlp.joblib")
 DEFAULT_METADATA_PATH = Path("allocation_ai_metadata.json")
-DEFAULT_TRANSFER_MODEL_PATH = Path("allocation_ai_base_transfer_model.joblib")
-DEFAULT_TRANSFER_METADATA_PATH = Path("transfer_model_metadata.json")
 
 
 # -----------------------------------------------------------------------------
