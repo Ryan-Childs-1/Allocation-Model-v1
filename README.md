@@ -2,26 +2,27 @@
 
 Prediction-only Streamlit app for Allocation AI.
 
-## What is included
+## Entry point
 
-- **Base NN Model**: the latest Camp app-compatible neural model (`allocation_ai_base_sklearn_mlp.joblib`).
-- Multi-model selector: upload additional `.zip`, `.joblib`, or `.pkl` model artifacts and select which model to use.
-- Prediction output as CSV, audit CSV, and ZIP.
-- AI process/metadata page with training metrics, threshold sweep, and model/prediction insight charts.
+Use `app.py` as the Streamlit entry point.
 
-## Run
+## Included model
 
-```bash
-pip install -r requirements.txt
-streamlit run app.py
-```
+The included default model appears in the app as **Base NN Model** and is stored as:
 
-## Inputs
+- `allocation_ai_base_sklearn_mlp.joblib`
+- `allocation_ai_metadata.json`
+- `allocation_ai_threshold_sweep.csv`
 
-- `.xlsb`, `.xlsx`, or `.csv` allocation file.
-- Default Excel sheet: `3.3 Working Table`.
+## Supported prediction files
+
+- `.xlsb`
+- `.xlsx`
+- `.csv`
 
 ## Outputs
+
+The app returns:
 
 - `completed_allocation.csv`
 - `allocation_audit.csv`
@@ -31,4 +32,4 @@ streamlit run app.py
 
 ## Notes
 
-The app preserves row order and writes Final Alloc in memory for a CSV download. It does not edit the source Excel workbook directly.
+This version fixes a deployment ImportError by importing `predictor.py` safely as a module and surfacing any file mismatch inside the Streamlit UI. It also lazily imports `pyxlsb`, so the app itself can load even if `.xlsb` support has an environment problem.

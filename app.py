@@ -12,14 +12,57 @@ import streamlit as st
 
 from allocation_simulator import AllocationConfig
 from data_io import dataframe_to_csv_bytes, read_allocation_file, save_upload
-from predictor import (
-    load_model_bundle,
-    model_feature_importance,
-    prediction_feature_relationships,
-    read_metadata,
-    predict_to_outputs,
-)
 from schema import ColumnDiagnostics, build_column_map
+
+# Predictor imports are loaded as a module instead of named imports so the app
+# cannot crash from a stale/mismatched predictor.py during deployment. If the
+# import itself fails, the Streamlit UI will show a clear error instead of a
+# redacted top-level ImportError.
+try:
+    import predictor as _predictor
+    _PREDICTOR_IMPORT_ERROR = None
+except Exception as _exc:  # pragma: no cover - deployment safety path
+    _predictor = None
+    _PREDICTOR_IMPORT_ERROR = _exc
+
+
+def _require_predictor():
+    if _predictor is None:
+        raise ImportError(
+            "Could not import predictor.py. Make sure app.py, predictor.py, features.py, "
+            "neural_model.py, allocation_simulator.py, data_io.py, and schema.py were all "
+            "uploaded from the same app zip. Original error: "
+            f"{type(_PREDICTOR_IMPORT_ERROR).__name__}: {_PREDICTOR_IMPORT_ERROR}"
+        )
+    return _predictor
+
+
+def read_metadata(*args, **kwargs):
+    if _predictor is None:
+        return {"import_error": f"{type(_PREDICTOR_IMPORT_ERROR).__name__}: {_PREDICTOR_IMPORT_ERROR}"}
+    return _predictor.read_metadata(*args, **kwargs)
+
+
+def load_model_bundle(*args, **kwargs):
+    return _require_predictor().load_model_bundle(*args, **kwargs)
+
+
+def predict_to_outputs(*args, **kwargs):
+    return _require_predictor().predict_to_outputs(*args, **kwargs)
+
+
+def model_feature_importance(*args, **kwargs):
+    mod = _require_predictor()
+    if not hasattr(mod, "model_feature_importance"):
+        return pd.DataFrame()
+    return mod.model_feature_importance(*args, **kwargs)
+
+
+def prediction_feature_relationships(*args, **kwargs):
+    mod = _require_predictor()
+    if not hasattr(mod, "prediction_feature_relationships"):
+        return pd.DataFrame()
+    return mod.prediction_feature_relationships(*args, **kwargs)
 
 st.set_page_config(page_title="Allocation AI Predictor", page_icon="🎯", layout="wide")
 
@@ -177,10 +220,10 @@ with st.sidebar:
     use_model_threshold = st.checkbox("Use selected model's saved threshold", value=True)
     manual_probability = st.slider(
         "Manual minimum allocation probability",
-        0.01,
-        0.99,
-        min(max(float(default_threshold), 0.01), 0.99),
-        0.01,
+        min_value=0.01,
+        max_value=0.99,
+        value=min(max(float(default_threshold), 0.01), 0.99),
+        step=0.01,
         disabled=use_model_threshold,
     )
     min_probability = float(default_threshold if use_model_threshold else manual_probability)
@@ -204,6 +247,10 @@ with st.sidebar:
 
 st.title(APP_TITLE)
 st.caption("Prediction-only app · Base NN Model included · multi-model selector · completed CSV + audit + AI insights")
+if _PREDICTOR_IMPORT_ERROR is not None:
+    st.error("The prediction engine did not import correctly. This usually means the GitHub repo has mismatched files from different app versions.")
+    st.exception(_PREDICTOR_IMPORT_ERROR)
+    st.stop()
 
 predict_tab, insights_tab, process_tab, model_tab = st.tabs([
     "Predict Allocation",

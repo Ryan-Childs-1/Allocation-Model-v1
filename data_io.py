@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 import pandas as pd
-from pyxlsb import open_workbook
 
 from schema import detect_header_row, unique_columns
 
@@ -31,6 +30,13 @@ def _read_xlsb_raw(path: str | Path, sheet_name: str = "3.3 Working Table", max_
     """
     rows = []
     max_cols = 0
+    try:
+        from pyxlsb import open_workbook
+    except Exception as exc:
+        raise ImportError(
+            "pyxlsb is required to read .xlsb files. Add pyxlsb to requirements.txt or upload a CSV/XLSX file."
+        ) from exc
+
     with open_workbook(str(path)) as wb:
         sheet_names = wb.sheets
         if sheet_name not in sheet_names:
