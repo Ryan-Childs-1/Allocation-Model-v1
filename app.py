@@ -88,12 +88,21 @@ st.set_page_config(page_title="Allocation AI Predictor", page_icon="🎯", layou
 
 APP_TITLE = "🎯 Allocation AI Predictor"
 BASE_MODEL_LABEL = "Base NN Model"
+BASE_CAMP_LABEL = "Base Camp Model"
 BUILTIN_MODELS = {
     BASE_MODEL_LABEL: {
         "model_path": Path("allocation_ai_base_sklearn_mlp.joblib"),
         "metadata_path": Path("allocation_ai_metadata.json"),
         "threshold_sweep_path": Path("allocation_ai_threshold_sweep.csv"),
         "description": "Included neural/allocation model."
+    },
+    BASE_CAMP_LABEL: {
+        "model_path": Path("allocation_ai_base_camp_model.joblib"),
+        "metadata_path": Path("base_camp_model_metadata.json"),
+        "threshold_sweep_path": Path("base_camp_model_threshold_sweep.csv"),
+        "training_log_path": Path("base_camp_model_training_log.csv"),
+        "training_progress_path": Path("base_camp_model_training_progress.csv"),
+        "description": "Production Camp MLP model trained with live-progress sklearn path."
     },
 }
 
@@ -203,8 +212,10 @@ def _load_baseline_metrics() -> dict:
         return {}
 
 
-included_meta = read_metadata(BUILTIN_MODELS[BASE_MODEL_LABEL]["metadata_path"])
-included_summary = _metadata_summary(included_meta)
+builtin_metadata = {label: read_metadata(info.get("metadata_path", Path(""))) for label, info in BUILTIN_MODELS.items()}
+builtin_summaries = {label: _metadata_summary(meta) for label, meta in builtin_metadata.items()}
+included_meta = builtin_metadata.get(BASE_MODEL_LABEL, {})
+included_summary = builtin_summaries.get(BASE_MODEL_LABEL, _metadata_summary({}))
 baseline_metrics = _load_baseline_metrics()
 
 # Sidebar model + prediction settings.
@@ -281,7 +292,7 @@ with st.sidebar:
     )
 
 st.title(APP_TITLE)
-st.caption("Prediction-only app · Base NN Model included · multi-model selector · completed CSV + audit + AI insights")
+st.caption("Prediction-only app · Base NN Model + Base Camp Model included · multi-model selector · completed CSV + audit + AI insights")
 if _PREDICTOR_IMPORT_ERROR is not None:
     st.error("The prediction engine did not import correctly. This usually means the GitHub repo has mismatched files from different app versions.")
     st.exception(_PREDICTOR_IMPORT_ERROR)
@@ -521,7 +532,7 @@ with process_tab:
         The Camp trainer builds a neural allocation model with integer FLM-unit targets, allocation probability, Review behavior, `Z - No Alloc.` override learning, scarcity learning, ordinal unit loss, focal allocation loss, OneCycle learning-rate scheduling, and start/stop/resume checkpoints.
 
         **4. Streamlit export**  
-        The Jupyter trainer exports one app-compatible model bundle. This app includes the **Base NN Model** and can also accept additional model artifact zips from future training runs.
+        The Jupyter trainer exports one app-compatible model bundle. This app includes the **Base NN Model** and the newer **Base Camp Model**, and can also accept additional model artifact zips from future training runs.
 
         **5. Prediction**  
         The selected model predicts integer FLM units and allocation probability for each row. Predictions are then passed through the allocation simulator.
@@ -595,7 +606,16 @@ with model_tab:
             except Exception as exc:
                 st.caption(f"Could not read training log: {exc}")
 
-    _show_model_card(BASE_MODEL_LABEL, included_meta, included_summary, BUILTIN_MODELS[BASE_MODEL_LABEL].get("threshold_sweep_path"))
+    for _idx, (_label, _info) in enumerate(BUILTIN_MODELS.items()):
+        if _idx:
+            st.divider()
+        _show_model_card(
+            _label,
+            builtin_metadata.get(_label, {}),
+            builtin_summaries.get(_label, _metadata_summary({})),
+            _info.get("threshold_sweep_path"),
+            _info.get("training_log_path") or _info.get("training_progress_path"),
+        )
 
     if baseline_metrics:
         st.markdown("### Alloc. Rec. baseline")

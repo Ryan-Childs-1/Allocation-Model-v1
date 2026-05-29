@@ -1,61 +1,46 @@
-# Allocation AI Streamlit Predictor
+# Allocation AI Predictor
 
-This is a flat, Streamlit-ready prediction app for Allocation AI.
+Prediction-only Streamlit app for allocation files.
+
+## Included model
+
+- **Base NN Model** — built-in Allocation AI model bundled with the app.
+
+You can still upload additional trained `.zip`, `.joblib`, or `.pkl` model artifacts from the sidebar and select them in the model dropdown.
+
+## Workflow
+
+1. Upload a `.xlsb`, `.xlsx`, or `.csv` allocation file.
+2. Select the built-in Base NN Model or upload/select another compatible model.
+3. Run prediction.
+4. Download:
+   - `completed_allocation.csv`
+   - `allocation_audit.csv`
+   - `allocation_ai_prediction_output.zip`
+
+## Features
+
+- Multi-model selector for uploaded custom models
+- Base NN Model included by default
+- Three-pass Review-row allocation logic
+- No artificial max-FLM-per-pass cap
+- Allows partial leftover Left DC below one FLM
+- Supports justified `Z - No Alloc.` overrides
+- CSV output preserving row order
+- Prediction insights and model metrics pages
+
+## Deployment
+
+Upload all files in this flat folder to GitHub / Streamlit Cloud. The app entry point is:
+
+```bash
+streamlit run app.py
+```
+
 
 ## Built-in models
 
-The AI selector includes two built-in models:
+- Base NN Model: original included allocation model.
+- Base Camp Model: latest production Camp MLP model trained through the live-progress sklearn path.
 
-1. **Base NN Model** — the prior included neural/allocation model.
-2. **Base Transfer Model** — the sequential transfer-trained Streamlit-compatible MLP model exported as `transfer_model`.
-
-You can also upload additional `.zip`, `.joblib`, or `.pkl` model artifacts and choose between all available models in the sidebar.
-
-## Inputs
-
-The app accepts allocation files in:
-
-- `.xlsb`
-- `.xlsx`
-- `.csv`
-
-It preserves row order and writes predictions into the detected Final Alloc column in the downloadable CSV output.
-
-## Outputs
-
-After prediction, the app provides:
-
-- `completed_allocation.csv`
-- `allocation_audit.csv`
-- `prediction_summary.json`
-- `model_feature_importance.csv`
-- `prediction_feature_relationships.csv`
-- a combined output ZIP
-
-## Model behavior
-
-The simulator supports:
-
-- integer Final Alloc output or blank
-- three-pass Review logic
-- no max-FLM-per-pass cap
-- `Z - No Alloc.` override when justified
-- partial remaining Left DC below one FLM
-- sequential Left DC updates by item
-
-## Deploying to Streamlit
-
-Upload all files in this flat folder to GitHub and deploy `app.py` as the Streamlit entry point.
-
-
-## File-size note
-
-The built-in **Base Transfer Model** is stored as split files:
-
-```text
-allocation_ai_base_transfer_model.joblib.part01
-allocation_ai_base_transfer_model.joblib.part02
-allocation_ai_base_transfer_model.joblib.part03
-```
-
-This keeps every repository file below 25 MB for GitHub/Streamlit upload limits. The app reconstructs the model in memory automatically at runtime. Do not rename or delete these `.partXX` files.
+Additional `.zip`, `.joblib`, and `.pkl` model artifacts can still be uploaded through the app sidebar.
