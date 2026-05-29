@@ -44,7 +44,27 @@ def read_metadata(*args, **kwargs):
 
 
 def load_model_bundle(*args, **kwargs):
-    return _require_predictor().load_model_bundle(*args, **kwargs)
+    """Compatibility wrapper around predictor.load_model_bundle.
+
+    Some Streamlit deployments can momentarily run a stale predictor.py after a
+    repo update.  This wrapper keeps the app from crashing if the predictor
+    function does not yet accept newer keyword arguments such as
+    default_metadata_path/model_label.  The current bundled predictor.py does
+    accept them, but filtering here makes the app robust during cloud rebuilds.
+    """
+    import inspect
+
+    mod = _require_predictor()
+    fn = mod.load_model_bundle
+    try:
+        sig = inspect.signature(fn)
+        if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+            allowed = set(sig.parameters.keys())
+            kwargs = {k: v for k, v in kwargs.items() if k in allowed}
+    except Exception:
+        # If introspection fails, fall back to the direct call.
+        pass
+    return fn(*args, **kwargs)
 
 
 def predict_to_outputs(*args, **kwargs):
